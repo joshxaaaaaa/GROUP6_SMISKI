@@ -32,14 +32,41 @@ try {
 
 $shippingCost = 50.00;
 $taxRate = 12.0; 
-$pwdDiscountRate = 20.0; 
+$loyaltyDiscountRate = 5.0;   // Loyal Customer Discount (% off product subtotal)
+$loyaltyMinPurchases = 5;     // Completed (delivered) purchases needed to qualify
 
 $settingsStmt = $db->query("SELECT setting_key, setting_value FROM system_settings");
 while ($row = $settingsStmt->fetch()) {
     if ($row['setting_key'] === 'shipping_cost') $shippingCost = floatval($row['setting_value']);
     if ($row['setting_key'] === 'tax_rate') $taxRate = floatval($row['setting_value']);
-    if ($row['setting_key'] === 'pwd_senior_discount') $pwdDiscountRate = floatval($row['setting_value']);
+    if ($row['setting_key'] === 'loyalty_discount_rate') $loyaltyDiscountRate = floatval($row['setting_value']);
+    if ($row['setting_key'] === 'loyalty_min_purchases') $loyaltyMinPurchases = max(1, intval($row['setting_value']));
 }
+
+/**
+ * Loyalty status from the customer's purchase history.
+ * Only successfully completed purchases (orders marked Delivered) count,
+ * so the status is re-assessed whenever an order is delivered.
+ */
+function getLoyaltyStatus(PDO $db, $customerId, $minPurchases) {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM orders WHERE customer_id = ? AND status = 'delivered'");
+    $stmt->execute([$customerId]);
+    $completed = (int)$stmt->fetchColumn();
+    return [
+        'completed' => $completed,
+        'required'  => $minPurchases,
+        'remaining' => max(0, $minPurchases - $completed),
+        'eligible'  => $completed >= $minPurchases,
+    ];
+}
+
+$loyalty = getLoyaltyStatus($db, (int)($_SESSION['user_id'] ?? 0), $loyaltyMinPurchases);
+$loyaltyRateLabel = rtrim(rtrim(number_format($loyaltyDiscountRate, 2, '.', ''), '0'), '.') . '%';
+
+// Applied automatically for eligible customers; they can choose "Remove Discount".
+// Removing it only affects this order — loyalty status is based on purchase history.
+$applyLoyaltyDiscount = $loyalty['eligible']
+    && (($_SERVER['REQUEST_METHOD'] === 'POST') ? (($_POST['apply_loyalty_discount'] ?? '1') === '1') : true);
 
 $productIds = array_keys($_SESSION['cart']);
 $inClause = implode(',', array_fill(0, count($productIds), '?'));
@@ -70,7 +97,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $phone = sanitize($_POST['phone'] ?? ($_SESSION['user_phone'] ?? ''));
     $address = sanitize($_POST['delivery_address'] ?? ($_SESSION['user_address'] ?? ''));
     $paymentMethod = sanitize($_POST['payment_method'] ?? 'COD');
-    $isPwdSenior = isset($_POST['is_pwd_senior']) ? 1 : 0;
 
     $paymentReceipt = null;
     $paymentStatus = 'unpaid';
@@ -129,7 +155,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($error)) {
-        $discountAmount = $isPwdSenior ? ($subtotal * ($pwdDiscountRate / 100)) : 0;
+        // Re-check eligibility against the latest purchase history before placing the order
+        $loyalty = getLoyaltyStatus($db, (int)($_SESSION['user_id'] ?? 0), $loyaltyMinPurchases);
+        $applyLoyaltyDiscount = $loyalty['eligible'] && (($_POST['apply_loyalty_discount'] ?? '1') === '1');
+
+        // Only one discount per order: the Loyal Customer Discount (no other promotions are combined)
+        $discountAmount = $applyLoyaltyDiscount ? round($subtotal * ($loyaltyDiscountRate / 100), 2) : 0;
         $discountedSubtotal = $subtotal - $discountAmount;
         $taxAmount = $discountedSubtotal * ($taxRate / 100);
         $totalAmount = $discountedSubtotal + $taxAmount + $shippingCost;
@@ -157,7 +188,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             ");
 
-            $discountType = $isPwdSenior ? 'PWD/Senior (20%)' : 'None';
+            // discount_type column is VARCHAR(20)
+            $discountType = $applyLoyaltyDiscount ? substr('Loyal Customer (' . $loyaltyRateLabel . ')', 0, 20) : 'None';
 
             $orderStmt->execute([
                 $customerId,
@@ -199,7 +231,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->commit();
 
             if (function_exists('logActivity')) {
-                logActivity($_SESSION['user_id'], 'ORDER_PLACED', "Order $orderNum placed for total amount ₱" . number_format($totalAmount, 2));
+                $discountNote = $applyLoyaltyDiscount ? " with Loyal Customer Discount (-₱" . number_format($discountAmount, 2) . ")" : "";
+                logActivity($_SESSION['user_id'], 'ORDER_PLACED', "Order $orderNum placed for total amount ₱" . number_format($totalAmount, 2) . $discountNote);
             }
 
             $_SESSION['cart'] = [];
@@ -221,6 +254,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 }
+
+// Values for the initial order summary (JavaScript recalculates when the discount is removed/applied)
+$loyaltyDiscountValue = $loyalty['eligible'] ? round($subtotal * ($loyaltyDiscountRate / 100), 2) : 0;
+$previewDiscount = $applyLoyaltyDiscount ? $loyaltyDiscountValue : 0;
+$previewTax = ($subtotal - $previewDiscount) * ($taxRate / 100);
+$previewTotal = ($subtotal - $previewDiscount) + $previewTax + $shippingCost;
 
 if (file_exists('includes/header.php')) {
     include 'includes/header.php';
@@ -522,19 +561,67 @@ if (file_exists('includes/header.php')) {
             <!-- Right Column: Summary & Checkout Actions -->
             <div style="flex: 1; min-width: 280px; display: flex; flex-direction: column; gap: 1.75rem; height: fit-content;">
 
-                <!-- PWD / Senior Citizen Discount -->
+                <!-- Loyal Customer Discount -->
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
                     <h4 class="neon-glow-text" style="font-size: 1.1rem; font-weight: 700; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
-                        <i class="fa-solid fa-id-card" style="color: #15803d;"></i> PWD / Senior Discount
+                        <i class="fa-solid fa-award" style="color: #15803d;"></i> Loyal Customer Discount
                     </h4>
-                    <p class="text-muted-green" style="font-size: 0.85rem; margin-bottom: 1.25rem; line-height: 1.5;">
-                        Check the box below to claim your 20% Senior Citizen / PWD legal discount on product subtotal.
-                    </p>
 
-                    <label style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; font-weight: 600; color: #064e3b; cursor: pointer;">
-                        <input type="checkbox" name="is_pwd_senior" id="pwdToggle" onchange="calculateTotal()" style="width:18px; height:18px; accent-color: #15803d;">
-                        Apply 20% PWD / Senior Discount
-                    </label>
+                    <?php if ($loyalty['eligible']): ?>
+                        <input type="hidden" name="apply_loyalty_discount" id="applyLoyaltyInput" value="<?= $applyLoyaltyDiscount ? '1' : '0' ?>">
+
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap;">
+                            <span style="background: rgba(220, 252, 231, 0.95); color: #15803d; border: 1px solid rgba(74, 222, 128, 0.7); font-size: 0.8rem; font-weight: 700; padding: 0.3rem 0.75rem; border-radius: 999px; display: inline-flex; align-items: center; gap: 0.35rem;">
+                                <i class="fa-solid fa-circle-check"></i> Eligible - Loyal Customer
+                            </span>
+                            <span class="text-muted-green" style="font-size: 0.8rem;"><?= $loyalty['completed'] ?> completed purchase<?= $loyalty['completed'] === 1 ? '' : 's' ?></span>
+                        </div>
+
+                        <!-- Shown while the discount is applied -->
+                        <div id="loyaltyAppliedBox" class="smiski-subcard" style="padding: 0.9rem 1rem; margin-bottom: 0.85rem; background: rgba(240, 253, 244, 0.9) !important; <?= $applyLoyaltyDiscount ? '' : 'display: none;' ?>">
+                            <div style="font-weight: 700; color: #064e3b; font-size: 0.9rem; margin-bottom: 0.25rem;">
+                                <i class="fa-solid fa-tag" style="color: #15803d;"></i> Loyal Customer Discount applied!
+                            </div>
+                            <div class="text-muted-green" style="font-size: 0.82rem; line-height: 1.5;">
+                                <?= $loyaltyRateLabel ?> off your ₱<?= number_format($subtotal, 2) ?> subtotal: <strong style="color: #15803d;">-₱<?= number_format($loyaltyDiscountValue, 2) ?></strong>. You save <strong style="color: #15803d;">₱<?= number_format($loyaltyDiscountValue, 2) ?></strong> on this order.
+                            </div>
+                        </div>
+
+                        <!-- Shown after the customer removes the discount -->
+                        <div id="loyaltyRemovedBox" class="smiski-subcard" style="padding: 0.9rem 1rem; margin-bottom: 0.85rem; <?= $applyLoyaltyDiscount ? 'display: none;' : '' ?>">
+                            <div style="font-weight: 700; color: #92400e; font-size: 0.9rem; margin-bottom: 0.25rem;">
+                                <i class="fa-solid fa-circle-info"></i> Discount not applied to this order
+                            </div>
+                            <div class="text-muted-green" style="font-size: 0.82rem; line-height: 1.5;">
+                                You are still a Loyal Customer. You can re-apply it now or use it on future orders.
+                            </div>
+                        </div>
+
+                        <button type="button" id="removeLoyaltyBtn" class="btn-green-secondary" onclick="setLoyaltyDiscount(false)" style="width: 100%; justify-content: center; padding: 0.6rem; <?= $applyLoyaltyDiscount ? '' : 'display: none;' ?>">
+                            <i class="fa-solid fa-xmark"></i> Remove Discount
+                        </button>
+                        <button type="button" id="applyLoyaltyBtn" class="btn-green-primary" onclick="setLoyaltyDiscount(true)" style="width: 100%; justify-content: center; padding: 0.6rem; <?= $applyLoyaltyDiscount ? 'display: none;' : '' ?>">
+                            <i class="fa-solid fa-tag"></i> Apply <?= $loyaltyRateLabel ?> Discount
+                        </button>
+
+                        <p class="text-muted-green" style="font-size: 0.75rem; margin-top: 0.75rem; line-height: 1.4;">
+                            Applied automatically, once per order. Cannot be combined with other promotional discounts.
+                        </p>
+                    <?php else: ?>
+                        <div style="margin-bottom: 0.85rem;">
+                            <span style="background: rgba(254, 243, 199, 0.95); color: #92400e; border: 1px solid rgba(251, 191, 36, 0.6); font-size: 0.8rem; font-weight: 700; padding: 0.3rem 0.75rem; border-radius: 999px; display: inline-flex; align-items: center; gap: 0.35rem;">
+                                <i class="fa-solid fa-hourglass-half"></i> Not yet eligible
+                            </span>
+                        </div>
+                        <p class="text-muted-green" style="font-size: 0.85rem; margin-bottom: 0.75rem; line-height: 1.5;">
+                            You have <strong style="color: #064e3b;"><?= $loyalty['completed'] ?> of <?= $loyalty['required'] ?></strong> completed purchases.
+                            Complete <strong style="color: #064e3b;"><?= $loyalty['remaining'] ?> more</strong> to unlock <?= $loyaltyRateLabel ?> off every order.
+                        </p>
+                        <div style="height: 8px; background: rgba(74, 222, 128, 0.2); border-radius: 999px; overflow: hidden; margin-bottom: 0.6rem;">
+                            <div style="height: 100%; width: <?= min(100, round($loyalty['completed'] / max(1, $loyalty['required']) * 100)) ?>%; background: #15803d; border-radius: 999px;"></div>
+                        </div>
+                        <p class="text-muted-green" style="font-size: 0.75rem; line-height: 1.4;">A purchase counts once the order has been delivered.</p>
+                    <?php endif; ?>
                 </div>
 
                 <!-- Payment Summary Box -->
@@ -547,9 +634,9 @@ if (file_exists('includes/header.php')) {
                             <span style="font-weight: 600; color: #064e3b;">₱<?= number_format($subtotal, 2) ?></span>
                         </div>
 
-                        <div style="display: flex; justify-content: space-between; color: #dc2626;">
-                            <span>Discount (PWD/Senior)</span>
-                            <span style="font-weight: 600;">-₱<span id="displayDiscount">0.00</span></span>
+                        <div id="discountRow" style="display: <?= $previewDiscount > 0 ? 'flex' : 'none' ?>; justify-content: space-between; color: #dc2626;">
+                            <span>Loyal Customer Discount (<?= $loyaltyRateLabel ?>)</span>
+                            <span style="font-weight: 600;">-₱<span id="displayDiscount"><?= number_format($previewDiscount, 2) ?></span></span>
                         </div>
 
                         <div style="display: flex; justify-content: space-between; color: #1f2937;">
@@ -559,14 +646,18 @@ if (file_exists('includes/header.php')) {
 
                         <div style="display: flex; justify-content: space-between; color: #1f2937;">
                             <span>VAT Tax (12%)</span>
-                            <span style="font-weight: 600; color: #064e3b;">₱<span id="displayTax"><?= number_format($subtotal * 0.12, 2) ?></span></span>
+                            <span style="font-weight: 600; color: #064e3b;">₱<span id="displayTax"><?= number_format($previewTax, 2) ?></span></span>
                         </div>
 
                         <hr style="border: 0; border-top: 1px dashed rgba(74, 222, 128, 0.4); margin: 0.5rem 0;">
 
                         <div style="display: flex; justify-content: space-between; font-size: 1.25rem; font-weight: 700; color: #15803d;">
                             <span>Total Amount</span>
-                            <span class="neon-glow-text" style="font-size: 1.35rem; font-weight: 700;">₱<span id="displayGrandTotal"><?= number_format(($subtotal * 1.12) + $shippingCost, 2) ?></span></span>
+                            <span class="neon-glow-text" style="font-size: 1.35rem; font-weight: 700;">₱<span id="displayGrandTotal"><?= number_format($previewTotal, 2) ?></span></span>
+                        </div>
+
+                        <div id="savingsNote" style="display: <?= $previewDiscount > 0 ? 'block' : 'none' ?>; text-align: right; font-size: 0.82rem; font-weight: 700; color: #15803d;">
+                            <i class="fa-solid fa-piggy-bank"></i> You save ₱<span id="displaySavings"><?= number_format($previewDiscount, 2) ?></span>
                         </div>
                     </div>
 
@@ -589,21 +680,45 @@ if (file_exists('includes/header.php')) {
 const baseSubtotal = <?= json_encode($subtotal) ?>;
 const shippingCost = <?= json_encode($shippingCost) ?>;
 const taxRate = <?= json_encode($taxRate) ?>;
-const pwdDiscountRate = <?= json_encode($pwdDiscountRate) ?>;
+const loyaltyDiscountRate = <?= json_encode($loyaltyDiscountRate) ?>;
+const isLoyalCustomer = <?= json_encode($loyalty['eligible']) ?>;
+
+function formatPeso(value) {
+    return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function isLoyaltyApplied() {
+    const input = document.getElementById('applyLoyaltyInput');
+    return isLoyalCustomer && input !== null && input.value === '1';
+}
 
 function calculateTotal() {
-    const isPwd = document.getElementById('pwdToggle').checked;
     let discount = 0;
-    if (isPwd) {
-        discount = baseSubtotal * (pwdDiscountRate / 100);
+    if (isLoyaltyApplied()) {
+        discount = Math.round(baseSubtotal * (loyaltyDiscountRate / 100) * 100) / 100;
     }
     const discountedSub = baseSubtotal - discount;
     const tax = discountedSub * (taxRate / 100);
     const grandTotal = discountedSub + tax + shippingCost;
 
-    document.getElementById('displayDiscount').innerText = discount.toFixed(2);
-    document.getElementById('displayTax').innerText = tax.toFixed(2);
-    document.getElementById('displayGrandTotal').innerText = grandTotal.toFixed(2);
+    document.getElementById('displayDiscount').innerText = formatPeso(discount);
+    document.getElementById('displayTax').innerText = formatPeso(tax);
+    document.getElementById('displayGrandTotal').innerText = formatPeso(grandTotal);
+    document.getElementById('displaySavings').innerText = formatPeso(discount);
+    document.getElementById('discountRow').style.display = discount > 0 ? 'flex' : 'none';
+    document.getElementById('savingsNote').style.display = discount > 0 ? 'block' : 'none';
+}
+
+// Apply / remove the Loyal Customer Discount for this order only (loyalty status is unaffected)
+function setLoyaltyDiscount(apply) {
+    const input = document.getElementById('applyLoyaltyInput');
+    if (!isLoyalCustomer || !input) return;
+    input.value = apply ? '1' : '0';
+    document.getElementById('loyaltyAppliedBox').style.display = apply ? 'block' : 'none';
+    document.getElementById('loyaltyRemovedBox').style.display = apply ? 'none' : 'block';
+    document.getElementById('removeLoyaltyBtn').style.display = apply ? 'flex' : 'none';
+    document.getElementById('applyLoyaltyBtn').style.display = apply ? 'none' : 'flex';
+    calculateTotal();
 }
 
 function togglePaymentSections() {
@@ -661,6 +776,7 @@ if (cardExpInput) {
 
 document.addEventListener('DOMContentLoaded', () => {
     togglePaymentSections();
+    calculateTotal();
 });
 </script>
 

@@ -329,4 +329,5 @@ INSERT INTO products (name, description, category_id, price, stock_quantity, sta
 INSERT INTO system_settings (setting_key, setting_value) VALUES
 ('shipping_cost', '120'),
 ('tax_rate', '12'),
-('pwd_senior_discount', '20');
+('loyalty_discount_rate', '5'),
+('loyalty_min_purchases', '5');

@@ -341,7 +341,7 @@ if (file_exists('includes/header.php')) {
                 </div>
 
                 <p class="text-muted-green" style="font-size: 0.85rem; margin-bottom: 1.75rem; line-height: 1.5;">
-                    Taxes, applicable discounts (Senior/PWD), and shipping fees will be finalized during checkout.
+                    Taxes, your Loyal Customer Discount (if eligible), and shipping fees will be finalized during checkout.
                 </p>
 
                 <?php if (function_exists('isAdminLoggedIn') && isAdminLoggedIn()): ?>
