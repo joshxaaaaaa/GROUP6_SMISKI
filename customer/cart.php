@@ -12,6 +12,9 @@ if (!isset($_SESSION['cart'])) {
     $_SESSION['cart'] = [];
 }
 
+// Load the customer's saved cart (persists across logout / re-login)
+syncCustomerCart();
+
 $action = $_GET['action'] ?? '';
 $id = intval($_GET['id'] ?? 0);
 
@@ -20,27 +23,68 @@ if (function_exists('isAdminLoggedIn') && isAdminLoggedIn() && !empty($action)) 
     exit;
 }
 
+$cartError = $_SESSION['cart_error'] ?? '';
+unset($_SESSION['cart_error']);
+
+/**
+ * Checks if one more unit of a product can be added to the cart.
+ * Returns an error message, or '' when the item can be added.
+ */
+function cartAddError($productId) {
+    $stmt = getDB()->prepare("SELECT name, stock_quantity FROM products WHERE id = ? AND status = 'active'");
+    $stmt->execute([$productId]);
+    $product = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$product) {
+        return 'This product is no longer available.';
+    }
+    $stock = (int)$product['stock_quantity'];
+    $inCart = (int)($_SESSION['cart'][$productId] ?? 0);
+    if ($stock <= 0) {
+        return '"' . $product['name'] . '" is currently out of stock.';
+    }
+    if ($inCart + 1 > $stock) {
+        return 'Only ' . $stock . ' unit(s) of "' . $product['name'] . '" are available, and you already have ' . $inCart . ' in your cart.';
+    }
+    return '';
+}
+
 if ($action === 'add' && $id > 0) {
-    $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
+    $addError = cartAddError($id);
+    if ($addError === '') {
+        $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
+        persistCart();
+    }
     $totalCount = array_sum($_SESSION['cart']);
 
     if (isset($_GET['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest')) {
         header('Content-Type: application/json');
         echo json_encode([
-            'success' => true,
+            'success' => $addError === '',
             'cartCount' => $totalCount,
-            'message' => 'Item added to cart!'
+            'message' => $addError === '' ? 'Item added to cart!' : $addError
         ]);
         exit;
     }
 
+    if ($addError !== '') {
+        $_SESSION['cart_error'] = $addError;
+    }
     $referer = $_SERVER['HTTP_REFERER'] ?? 'index.php';
     header("Location: $referer");
     exit;
 }
 
 if ($action === 'buy_now' && $id > 0) {
-    $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
+    $addError = cartAddError($id);
+    if ($addError === '') {
+        $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
+        persistCart();
+    } elseif (empty($_SESSION['cart'][$id])) {
+        // Nothing of this product in the cart and it can't be added
+        $_SESSION['cart_error'] = $addError;
+        header("Location: cart.php");
+        exit;
+    }
     if (function_exists('isCustomerLoggedIn') && !isCustomerLoggedIn()) {
         $_SESSION['redirect_after_login'] = 'checkout.php';
         $_SESSION['login_prompt'] = 'Please log in or sign up to complete your checkout.';
@@ -57,6 +101,7 @@ if ($action === 'reduce' && $id > 0) {
         if ($_SESSION['cart'][$id] <= 0) {
             unset($_SESSION['cart'][$id]);
         }
+        persistCart();
     }
     header("Location: cart.php");
     exit;
@@ -64,6 +109,7 @@ if ($action === 'reduce' && $id > 0) {
 
 if ($action === 'remove' && $id > 0) {
     unset($_SESSION['cart'][$id]);
+    persistCart();
     header("Location: cart.php");
     exit;
 }
@@ -218,6 +264,13 @@ if (file_exists('includes/header.php')) {
             </div>
         </div>
     </div>
+
+    <?php if (!empty($cartError)): ?>
+        <div class="smiski-card" style="background: rgba(254, 226, 226, 0.95) !important; border: 1px solid rgba(248, 113, 113, 0.8) !important; color: #991b1b; padding: 1rem 1.5rem; margin-bottom: 1.5rem; font-weight: 600; display: flex; align-items: center; gap: 0.75rem;">
+            <i class="fa-solid fa-circle-exclamation" style="font-size: 1.2rem; color: #dc2626;"></i>
+            <span><?= htmlspecialchars($cartError) ?></span>
+        </div>
+    <?php endif; ?>
 
     <?php if (empty($cartItems)): ?>
         <div class="smiski-card" style="padding: 4rem 2rem; text-align: center;">

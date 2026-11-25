@@ -2,7 +2,11 @@
 require_once __DIR__ . '/../config/db.php';
 
 $db = getDB();
-$contactSuccess = '';
+
+// Flash messages from the Contact Us form (Post/Redirect/Get)
+$contactSuccess = $_SESSION['contact_flash_success'] ?? '';
+$contactError = $_SESSION['contact_flash_error'] ?? '';
+unset($_SESSION['contact_flash_success'], $_SESSION['contact_flash_error']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submit_contact') {
     $name = sanitize($_POST['name'] ?? '');
@@ -10,17 +14,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submi
     $subject = sanitize($_POST['subject'] ?? '');
     $message = sanitize($_POST['message'] ?? '');
 
-    if (!empty($name) && !empty($email) && !empty($subject) && !empty($message)) {
+    if (isAdminLoggedIn()) {
+        $_SESSION['contact_flash_error'] = 'The contact form is disabled in Admin mode.';
+    } elseif (empty($name) || empty($email) || empty($subject) || empty($message)) {
+        $_SESSION['contact_flash_error'] = 'Please fill in all fields of the Contact Us form.';
+    } elseif (!filter_var(html_entity_decode($email, ENT_QUOTES, 'UTF-8'), FILTER_VALIDATE_EMAIL)) {
+        $_SESSION['contact_flash_error'] = 'Please enter a valid email address.';
+    } elseif (!consumeFormToken('contact_form', $_POST['form_token'] ?? '')) {
+        // Same form submitted again (refresh / double click): don't save a duplicate
+        $_SESSION['contact_flash_error'] = 'This message was already submitted.';
+    } else {
         $userId = $_SESSION['user_id'] ?? null;
         try {
-            $stmt = $db->prepare("INSERT INTO contact_messages (user_id, name, email, subject, message) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$userId, $name, $email, $subject, $message]);
+            try {
+                $stmt = $db->prepare("INSERT INTO contact_messages (user_id, name, email, subject, message) VALUES (?, ?, ?, ?, ?)");
+                $stmt->execute([$userId, $name, $email, $subject, $message]);
+            } catch (Exception $e) {
+                $stmt = $db->prepare("INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$name, $email, $subject, $message]);
+            }
+            $_SESSION['contact_flash_success'] = 'Thank you! Your message has been sent successfully. <a href="messages.php" style="color:#064e3b; font-weight:700; text-decoration:underline; text-shadow: 0 0 6px rgba(74,222,128,0.5);">Click here to track support replies</a>.';
         } catch (Exception $e) {
-            $stmt = $db->prepare("INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$name, $email, $subject, $message]);
+            $_SESSION['contact_flash_error'] = 'Failed to send your message. Please try again.';
         }
-        $contactSuccess = 'Thank you! Your message has been sent successfully. <a href="messages.php?email=' . urlencode($email) . '" style="color:#064e3b; font-weight:700; text-decoration:underline; text-shadow: 0 0 6px rgba(74,222,128,0.5);">Click here to track support replies</a>.';
     }
+
+    // Redirect so refreshing the page does not resubmit the form
+    header("Location: index.php");
+    exit;
 }
 
 // Categories sorted strictly A-Z (Case-insensitive using LOWER)
@@ -118,6 +139,13 @@ require_once __DIR__ . '/includes/header.php';
         <div class="smiski-card" style="color: #064e3b; margin-bottom: 1.5rem; border-radius: 18px; padding: 1.1rem 1.4rem; font-weight: 600; display: flex; align-items: center; gap: 0.75rem;">
             <i class="fa-solid fa-circle-check" style="color: #16a34a; font-size: 1.2rem; filter: drop-shadow(0 0 6px rgba(74,222,128,0.8));"></i> 
             <div><?= $contactSuccess ?></div>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($contactError): ?>
+        <div class="smiski-card" style="color: #991b1b; background: rgba(254, 226, 226, 0.95) !important; margin-bottom: 1.5rem; border-radius: 18px; padding: 1.1rem 1.4rem; font-weight: 600; display: flex; align-items: center; gap: 0.75rem;">
+            <i class="fa-solid fa-circle-exclamation" style="color: #dc2626; font-size: 1.2rem;"></i>
+            <div><?= htmlspecialchars($contactError) ?></div>
         </div>
     <?php endif; ?>
 

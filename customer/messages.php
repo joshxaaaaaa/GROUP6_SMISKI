@@ -15,10 +15,13 @@ $db = getDB();
 $isLoggedIn = !empty($_SESSION['user_id']) || !empty($_SESSION['user_email']);
 $userEmail = $_SESSION['user_email'] ?? '';
 
-$messageSuccess = '';
-$messageError = '';
+// Flash messages set before a redirect (Post/Redirect/Get)
+$messageSuccess = $_SESSION['support_flash_success'] ?? '';
+$messageError = $_SESSION['support_flash_error'] ?? '';
+unset($_SESSION['support_flash_success'], $_SESSION['support_flash_error']);
 $formSubject = '';
 $formMessage = '';
+$reopenForm = false;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'send_message') {
     $formSubject = $_POST['subject'] ?? '';
@@ -34,22 +37,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         if (empty($name) || empty($email) || empty($subject) || empty($message)) {
             $messageError = 'Please fill in all required fields.';
+            $reopenForm = true;
+        } elseif (!consumeFormToken('support_message', $_POST['form_token'] ?? '')) {
+            // The same form was submitted again (page refresh / double click): do not create another ticket
+            $_SESSION['support_flash_error'] = 'This message was already submitted. Your ticket is listed below.';
+            header("Location: messages.php");
+            exit;
         } else {
             try {
                 $stmt = $db->prepare("INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)");
                 $result = $stmt->execute([$name, $email, $subject, $message]);
                 
                 if ($result) {
-                    $messageSuccess = 'Your message has been sent successfully!';
-                    $formSubject = '';
-                    $formMessage = '';
+                    $_SESSION['support_flash_success'] = 'Your message has been sent successfully!';
+                    // Redirect so refreshing the page does not resubmit the form
+                    header("Location: messages.php");
+                    exit;
                 }
+                $messageError = 'Failed to send your message. Please try again.';
+                $reopenForm = true;
             } catch (PDOException $e) {
                 $messageError = 'Database Error: ' . $e->getMessage();
+                $reopenForm = true;
             }
         }
     }
 }
+
+$supportFormToken = $isLoggedIn ? generateFormToken('support_message') : '';
 
 $myMessages = [];
 if ($isLoggedIn && !empty($userEmail)) {
@@ -236,7 +251,7 @@ if (file_exists('includes/header.php')) {
             <?php foreach ($myMessages as $m): ?>
                 <?php 
                     $hasReply = !empty($m['admin_reply'] ?? null); 
-                    $rawReplyTime = $m['reply_at'] ?? ($m['updated_at'] ?? $m['created_at']);
+                    $rawReplyTime = $m['replied_at'] ?? ($m['updated_at'] ?? $m['created_at']);
                     $replyTime = date('M d, Y - h:i A', strtotime($rawReplyTime));
                 ?>
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
@@ -294,8 +309,9 @@ if (file_exists('includes/header.php')) {
         <button type="button" onclick="closeContactPane()" style="position: absolute; top: 1.25rem; right: 1.5rem; background: none; border: none; font-size: 1.75rem; cursor: pointer; color: #166534; transition: color 0.2s;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#166534'">&times;</button>
         <span style="background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(10px); color: #064e3b; font-size: 0.75rem; font-weight: 700; padding: 0.3rem 0.8rem; border-radius: 20px; display: inline-block; margin-bottom: 0.75rem; border: 1px solid rgba(74,222,128,0.6);">NEW MESSAGE</span>
         <h3 class="neon-glow-text" style="margin-bottom: 1.5rem; font-size: 1.5rem; font-weight: 700;">Send Support Inquiry</h3>
-        <form method="POST" action="">
+        <form method="POST" action="messages.php" onsubmit="const b = this.querySelector('button[type=submit]'); if (b) { b.disabled = true; b.textContent = 'Sending...'; }">
             <input type="hidden" name="action" value="send_message">
+            <input type="hidden" name="form_token" value="<?= htmlspecialchars($supportFormToken) ?>">
             <div style="margin-bottom: 1.15rem;">
                 <label class="text-muted-green" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 0.35rem;">Name</label>
                 <input type="text" name="name" required value="<?= htmlspecialchars($_SESSION['user_name'] ?? '') ?>" class="hover-scale" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; backdrop-filter: blur(10px);">
@@ -325,7 +341,7 @@ if (file_exists('includes/header.php')) {
 function openContactPane() { document.getElementById('contactPane').style.display = 'flex'; }
 function closeContactPane() { document.getElementById('contactPane').style.display = 'none'; }
 
-<?php if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($messageError)): ?>
+<?php if ($reopenForm): ?>
     window.addEventListener('DOMContentLoaded', () => {
         openContactPane();
     });

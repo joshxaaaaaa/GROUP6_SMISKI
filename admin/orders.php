@@ -15,6 +15,37 @@ if (!isAdminLoggedIn()) {
 
 $db = getDB();
 $message = '';
+$error = '';
+
+$validOrderStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
+// Final statuses: once reached, the order status can no longer be changed
+$lockedOrderStatuses = ['delivered', 'cancelled'];
+
+/**
+ * Returns '' when the status change is allowed, otherwise the reason it is not.
+ */
+function orderStatusChangeError($fromStatus, $toStatus, array $validStatuses, array $lockedStatuses) {
+    if (!in_array($toStatus, $validStatuses, true)) {
+        return 'Invalid order status selected.';
+    }
+    if ($fromStatus !== $toStatus && in_array($fromStatus, $lockedStatuses, true)) {
+        if ($fromStatus === 'delivered') {
+            return 'This order has already been Delivered. Its status can no longer be changed.';
+        }
+        return 'This order has already been Cancelled. Its status can no longer be changed.';
+    }
+    return '';
+}
+
+/** Puts the items of an order back into inventory. */
+function restoreOrderStock(PDO $db, $orderId) {
+    $items = $db->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
+    $items->execute([$orderId]);
+    $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?");
+    foreach ($items->fetchAll() as $it) {
+        $stockStmt->execute([$it['quantity'], $it['product_id']]);
+    }
+}
 
 try {
     $db->exec("ALTER TABLE orders ADD COLUMN payment_receipt VARCHAR(255) NULL AFTER payment_method");
@@ -29,78 +60,135 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'approve_payment') {
         $id = intval($_POST['id'] ?? 0);
         if ($id > 0) {
-            $stmt = $db->prepare("UPDATE orders SET payment_status = 'paid', status = 'processing' WHERE id = ?");
-            $stmt->execute([$id]);
-            logActivity($_SESSION['user_id'], 'PAYMENT_APPROVED', "Approved GCash payment for Order ID $id");
-            $message = 'GCash payment approved! Order status updated to Processing.';
+            try {
+                $db->beginTransaction();
+                $cur = $db->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
+                $cur->execute([$id]);
+                $prevStatus = $cur->fetchColumn();
+
+                if ($prevStatus === false) {
+                    $db->rollBack();
+                    $error = 'Order not found.';
+                } elseif (in_array($prevStatus, $lockedOrderStatuses, true)) {
+                    $db->rollBack();
+                    $error = 'Payment cannot be approved because this order is already ' . ucfirst($prevStatus) . '.';
+                } else {
+                    // Move a pending order to Processing; keep later statuses (e.g. Shipped) as they are
+                    $newStatus = ($prevStatus === 'pending') ? 'processing' : $prevStatus;
+                    $stmt = $db->prepare("UPDATE orders SET payment_status = 'paid', status = ? WHERE id = ?");
+                    $stmt->execute([$newStatus, $id]);
+                    $db->commit();
+                    logActivity($_SESSION['user_id'], 'PAYMENT_APPROVED', "Approved GCash payment for Order ID $id");
+                    $message = 'GCash payment approved! Order status is now ' . ucfirst($newStatus) . '.';
+                }
+            } catch (Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $error = 'Failed to approve payment: ' . $e->getMessage();
+            }
         }
     }
 
     if ($action === 'reject_payment') {
         $id = intval($_POST['id'] ?? 0);
         if ($id > 0) {
-            $prevStatus = $db->query("SELECT status FROM orders WHERE id = $id")->fetchColumn();
-            if ($prevStatus !== 'cancelled') {
-                $items = $db->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-                $items->execute([$id]);
-                $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?");
-                foreach ($items->fetchAll() as $it) {
-                    $stockStmt->execute([$it['quantity'], $it['product_id']]);
-                }
-            }
+            try {
+                $db->beginTransaction();
+                $cur = $db->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
+                $cur->execute([$id]);
+                $prevStatus = $cur->fetchColumn();
 
-            $stmt = $db->prepare("UPDATE orders SET payment_status = 'rejected', status = 'cancelled' WHERE id = ?");
-            $stmt->execute([$id]);
-            logActivity($_SESSION['user_id'], 'PAYMENT_REJECTED', "Rejected payment for Order ID $id and cancelled order.");
-            $message = 'GCash payment rejected. Order has been cancelled and stock restored.';
+                if ($prevStatus === false) {
+                    $db->rollBack();
+                    $error = 'Order not found.';
+                } elseif ($prevStatus === 'delivered') {
+                    $db->rollBack();
+                    $error = 'Payment cannot be rejected because this order has already been Delivered.';
+                } else {
+                    if ($prevStatus !== 'cancelled') {
+                        restoreOrderStock($db, $id);
+                    }
+                    $stmt = $db->prepare("UPDATE orders SET payment_status = 'rejected', status = 'cancelled' WHERE id = ?");
+                    $stmt->execute([$id]);
+                    $db->commit();
+                    logActivity($_SESSION['user_id'], 'PAYMENT_REJECTED', "Rejected payment for Order ID $id and cancelled order.");
+                    $message = 'GCash payment rejected. Order has been cancelled and stock restored.';
+                }
+            } catch (Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $error = 'Failed to reject payment: ' . $e->getMessage();
+            }
         }
     }
 
     if ($action === 'update_status') {
         $id = intval($_POST['id'] ?? 0);
-        $status = sanitize($_POST['status'] ?? 'pending');
+        $status = strtolower(trim($_POST['status'] ?? ''));
 
         if ($id > 0) {
-            $prevStatus = $db->query("SELECT status FROM orders WHERE id = $id")->fetchColumn();
+            try {
+                $db->beginTransaction();
+                // Lock the order row so two updates can't adjust stock twice
+                $cur = $db->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
+                $cur->execute([$id]);
+                $prevStatus = $cur->fetchColumn();
 
-            if ($status === 'cancelled' && $prevStatus !== 'cancelled') {
-                $items = $db->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-                $items->execute([$id]);
-                $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?");
-                foreach ($items->fetchAll() as $it) {
-                    $stockStmt->execute([$it['quantity'], $it['product_id']]);
+                $changeError = ($prevStatus === false)
+                    ? 'Order not found.'
+                    : orderStatusChangeError($prevStatus, $status, $validOrderStatuses, $lockedOrderStatuses);
+
+                if ($changeError !== '') {
+                    $db->rollBack();
+                    $error = $changeError;
+                } elseif ($prevStatus === $status) {
+                    $db->rollBack();
+                    $message = 'No changes made. The order is already ' . ucfirst($status) . '.';
+                } else {
+                    if ($status === 'cancelled') {
+                        // Cancelling puts the reserved items back into inventory
+                        restoreOrderStock($db, $id);
+                    }
+
+                    $stmt = $db->prepare("UPDATE orders SET status = ? WHERE id = ?");
+                    $stmt->execute([$status, $id]);
+
+                    if ($status === 'delivered') {
+                        $db->prepare("UPDATE orders SET payment_status = 'paid' WHERE id = ?")->execute([$id]);
+                    }
+
+                    $db->commit();
+                    logActivity($_SESSION['user_id'], 'ORDER_STATUS_UPDATED', "Updated order ID $id status from $prevStatus to: $status");
+                    $message = 'Order status updated successfully!';
                 }
+            } catch (Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $error = 'Failed to update order status: ' . $e->getMessage();
             }
-
-            $stmt = $db->prepare("UPDATE orders SET status = ? WHERE id = ?");
-            $stmt->execute([$status, $id]);
-
-            if ($status === 'delivered') {
-                $db->prepare("UPDATE orders SET payment_status = 'paid' WHERE id = ?")->execute([$id]);
-            }
-
-            logActivity($_SESSION['user_id'], 'ORDER_STATUS_UPDATED', "Updated order ID $id status to: $status");
-            $message = 'Order status updated successfully!';
         }
     }
 
     if ($action === 'delete') {
         $id = intval($_POST['id'] ?? 0);
         if ($id > 0) {
-            $prevStatus = $db->query("SELECT status FROM orders WHERE id = $id")->fetchColumn();
-            if ($prevStatus !== 'cancelled') {
-                $items = $db->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
-                $items->execute([$id]);
-                $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?");
-                foreach ($items->fetchAll() as $it) {
-                    $stockStmt->execute([$it['quantity'], $it['product_id']]);
-                }
-            }
+            try {
+                $db->beginTransaction();
+                $cur = $db->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
+                $cur->execute([$id]);
+                $prevStatus = $cur->fetchColumn();
 
-            $stmt = $db->prepare("DELETE FROM orders WHERE id = ?");
-            $stmt->execute([$id]);
-            logActivity($_SESSION['user_id'], 'ORDER_DELETED', "Deleted order ID $id");
-            $message = 'Order deleted successfully!';
+                // Delivered items have left the inventory and cancelled orders were already restocked
+                if ($prevStatus !== false && !in_array($prevStatus, ['cancelled', 'delivered'], true)) {
+                    restoreOrderStock($db, $id);
+                }
+
+                $stmt = $db->prepare("DELETE FROM orders WHERE id = ?");
+                $stmt->execute([$id]);
+                $db->commit();
+                logActivity($_SESSION['user_id'], 'ORDER_DELETED', "Deleted order ID $id");
+                $message = 'Order deleted successfully!';
+            } catch (Exception $e) {
+                if ($db->inTransaction()) $db->rollBack();
+                $error = 'Failed to delete order: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -280,6 +368,12 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
+    <?php if ($error): ?>
+        <div style="background: rgba(254, 226, 226, 0.95); border: 1px solid rgba(248, 113, 113, 0.6); color: #991b1b; padding: 0.85rem 1rem; border-radius: 12px; font-size: 0.9rem; margin-bottom: 1.5rem; font-weight: 600; box-shadow: 0 5px 15px rgba(0,0,0,0.15);">
+            <i class="fa-solid fa-circle-exclamation" style="color: #dc2626;"></i> <?= htmlspecialchars($error) ?>
+        </div>
+    <?php endif; ?>
+
     <div class="smiski-card" style="padding: 0; overflow: hidden;">
         <div style="overflow-x: auto;">
             <table class="custom-table">
@@ -399,11 +493,13 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </div>
 
+        <div id="receipt_locked_notice" style="display: none; background: rgba(254, 243, 199, 0.95); border: 1px solid rgba(251, 191, 36, 0.6); color: #92400e; padding: 0.75rem 1rem; border-radius: 12px; font-size: 0.85rem; font-weight: 600; margin-bottom: 1rem;"></div>
+
         <div style="display: flex; gap: 0.75rem; justify-content: center;">
             <form method="POST" style="flex: 1;">
                 <input type="hidden" name="action" value="approve_payment">
                 <input type="hidden" name="id" id="receipt_approve_id">
-                <button type="submit" class="btn-green-primary" style="width: 100%; padding: 0.75rem; justify-content: center;">
+                <button type="submit" id="receipt_approve_btn" class="btn-green-primary" style="width: 100%; padding: 0.75rem; justify-content: center;">
                     <i class="fa-solid fa-circle-check"></i> Approve Payment
                 </button>
             </form>
@@ -411,7 +507,7 @@ require_once __DIR__ . '/includes/header.php';
             <form method="POST" style="flex: 1;" onsubmit="return confirm('Are you sure you want to reject this payment and cancel the order?')">
                 <input type="hidden" name="action" value="reject_payment">
                 <input type="hidden" name="id" id="receipt_reject_id">
-                <button type="submit" class="btn-danger-glow" style="width: 100%; padding: 0.75rem; justify-content: center;">
+                <button type="submit" id="receipt_reject_btn" class="btn-danger-glow" style="width: 100%; padding: 0.75rem; justify-content: center;">
                     <i class="fa-solid fa-ban"></i> Reject & Cancel
                 </button>
             </form>
@@ -443,11 +539,12 @@ require_once __DIR__ . '/includes/header.php';
                     <option value="cancelled">Cancelled (Finalized / Rejected)</option>
                 </select>
                 <p class="text-muted-green" style="font-size: 0.78rem; margin-top: 0.4rem;">
-                    Note: Setting status to <strong>Cancelled</strong> automatically restores reserved inventory stock. Setting to <strong>Delivered</strong> marks COD payment as completed.
+                    Note: Setting status to <strong>Cancelled</strong> automatically restores reserved inventory stock. Setting to <strong>Delivered</strong> marks COD payment as completed. Delivered and Cancelled orders are final and can no longer be changed.
                 </p>
+                <div id="status_locked_notice" style="display: none; background: rgba(254, 243, 199, 0.95); border: 1px solid rgba(251, 191, 36, 0.6); color: #92400e; padding: 0.75rem 1rem; border-radius: 12px; font-size: 0.85rem; font-weight: 600; margin-top: 0.75rem;"></div>
             </div>
 
-            <button type="submit" class="btn-green-primary" style="width: 100%; padding: 0.75rem; justify-content: center; font-size: 0.95rem;">
+            <button type="submit" id="status_submit_btn" class="btn-green-primary" style="width: 100%; padding: 0.75rem; justify-content: center; font-size: 0.95rem;">
                 <i class="fa-solid fa-check"></i> Save Status Change
             </button>
         </form>
@@ -484,14 +581,56 @@ function openReceiptModal(o) {
         img.style.display = 'none';
         if (notice) notice.style.display = 'block';
     }
+
+    // Payments of Delivered / Cancelled orders can no longer be approved (and Delivered can't be rejected)
+    const status = (o.status || '').toLowerCase();
+    const approveBtn = document.getElementById('receipt_approve_btn');
+    const rejectBtn = document.getElementById('receipt_reject_btn');
+    const lockNotice = document.getElementById('receipt_locked_notice');
+    const approveLocked = (status === 'delivered' || status === 'cancelled');
+    const rejectLocked = (status === 'delivered');
+    setButtonLocked(approveBtn, approveLocked);
+    setButtonLocked(rejectBtn, rejectLocked);
+    if (approveLocked) {
+        lockNotice.innerHTML = '<i class="fa-solid fa-lock"></i> This order is already ' + status.charAt(0).toUpperCase() + status.slice(1) + '. Payment actions are no longer available.';
+        lockNotice.style.display = 'block';
+    } else {
+        lockNotice.style.display = 'none';
+    }
     document.getElementById('receiptModal').style.display = 'flex';
+}
+
+function setButtonLocked(btn, locked) {
+    if (!btn) return;
+    btn.disabled = locked;
+    btn.style.opacity = locked ? '0.5' : '';
+    btn.style.cursor = locked ? 'not-allowed' : '';
 }
 function closeReceiptModal() { document.getElementById('receiptModal').style.display = 'none'; }
 
 function openStatusModal(o) {
     document.getElementById('status_order_id').value = o.id;
     document.getElementById('status_order_num').innerText = o.order_number;
-    document.getElementById('status_select').value = o.status;
+    const select = document.getElementById('status_select');
+    const notice = document.getElementById('status_locked_notice');
+    const submitBtn = document.getElementById('status_submit_btn');
+    const current = (o.status || '').toLowerCase();
+    const locked = (current === 'delivered' || current === 'cancelled');
+
+    select.value = current;
+    // Final statuses (Delivered / Cancelled) can't be changed to anything else
+    Array.from(select.options).forEach(opt => {
+        opt.disabled = locked && opt.value !== current;
+    });
+    select.disabled = locked;
+    setButtonLocked(submitBtn, locked);
+
+    if (locked) {
+        notice.innerHTML = '<i class="fa-solid fa-lock"></i> This order is already ' + current.charAt(0).toUpperCase() + current.slice(1) + '. Its status can no longer be changed.';
+        notice.style.display = 'block';
+    } else {
+        notice.style.display = 'none';
+    }
     document.getElementById('statusModal').style.display = 'flex';
 }
 function closeStatusModal() { document.getElementById('statusModal').style.display = 'none'; }

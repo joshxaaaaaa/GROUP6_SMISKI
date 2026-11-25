@@ -1,6 +1,9 @@
 <?php
 require_once __DIR__ . '/../../config/db.php';
 
+// Make sure a logged-in customer's saved cart is loaded so the badge is accurate
+syncCustomerCart();
+
 $cartCount = 0;
 if (isset($_SESSION['cart']) && is_array($_SESSION['cart'])) {
     foreach ($_SESSION['cart'] as $qty) {
@@ -329,7 +332,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
                 </a>
             <?php endif; ?>
 
-            <a href="logout.php" class="btn btn-secondary" style="padding:0.4rem 0.9rem; font-size:0.85rem;"><i class="fa-solid fa-right-from-bracket"></i> Logout</a>
+            <a href="logout.php" class="btn btn-secondary" style="padding:0.4rem 0.9rem; font-size:0.85rem;" onclick="return openLogoutConfirm(event)"><i class="fa-solid fa-right-from-bracket"></i> Logout</a>
         <?php else: ?>
             <a href="login.php" class="btn btn-outline <?= ($current_page == 'login.php') ? 'active' : '' ?>" style="padding:0.4rem 0.9rem; font-size:0.85rem;">Log In</a>
             <a href="register.php" class="btn btn-outline <?= ($current_page == 'register.php') ? 'active' : '' ?>" style="padding:0.4rem 0.9rem; font-size:0.85rem;">Sign Up</a>
@@ -338,8 +341,25 @@ $current_page = basename($_SERVER['PHP_SELF']);
 </header>
 
 
+<?php if (isset($_SESSION['user_id'])): ?>
+<!-- Logout Confirmation Dialog -->
+<div class="modal-overlay" id="logoutConfirmModal" role="dialog" aria-modal="true" aria-labelledby="logoutConfirmTitle" onclick="if (event.target === this) closeLogoutConfirm()">
+    <div class="modal-card" style="max-width: 420px; text-align: center;">
+        <div style="width: 56px; height: 56px; margin: 0 auto 1rem; border-radius: 50%; background: rgba(134, 239, 172, 0.15); border: 1px solid rgba(134, 239, 172, 0.4); display: flex; align-items: center; justify-content: center; font-size: 1.4rem; color: #86efac;">
+            <i class="fa-solid fa-right-from-bracket"></i>
+        </div>
+        <h3 id="logoutConfirmTitle" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.5rem; color: #ffffff;">Are you sure you want to log out?</h3>
+        <form method="POST" action="logout.php" style="display: flex; gap: 0.75rem; justify-content: center;">
+            <input type="hidden" name="confirm_logout" value="1">
+            <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeLogoutConfirm()">Cancel</button>
+            <button type="submit" class="btn btn-primary" style="flex: 1;">Confirm</button>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
+
 <div id="cartToast" style="position: fixed; bottom: 2rem; right: 2rem; z-index: 3000; background: rgba(10, 40, 20, 0.95); backdrop-filter: blur(10px); color: white; padding: 0.85rem 1.3rem; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.4); border: 1px solid rgba(187, 247, 208, 0.3); display: flex; align-items: center; gap: 0.85rem; font-size: 0.95rem; font-weight: 500; transform: translateY(100px); opacity: 0; transition: all 0.35s cubic-bezier(0.68, -0.55, 0.265, 1.55); pointer-events: none;">
-    <div style="width: 34px; height: 34px; background: var(--success); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1rem; color: white; flex-shrink: 0;">
+    <div id="cartToastIcon" style="width: 34px; height: 34px; background: var(--success); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1rem; color: white; flex-shrink: 0;">
         <i class="fa-solid fa-check"></i>
     </div>
     <div>
@@ -353,24 +373,37 @@ function addToCart(productId, productName) {
     fetch('cart.php?action=add&id=' + productId + '&ajax=1')
         .then(res => res.json())
         .then(data => {
-            if (data.success) {
-                const badges = document.querySelectorAll('.cart-badge');
+            const badges = document.querySelectorAll('.cart-badge');
+            if (typeof data.cartCount !== 'undefined') {
                 badges.forEach(b => b.textContent = data.cartCount);
+            }
+            if (data.success) {
                 showToast(productName);
+            } else {
+                showToast(productName, data.message || 'Unable to add this item to your cart.');
             }
         })
         .catch(err => {
             console.error('Add to cart error:', err);
+            showToast(productName, 'Something went wrong. Please try again.');
         });
 }
 
-function showToast(productName) {
+function showToast(productName, errorMessage) {
     const toast = document.getElementById('cartToast');
     const title = document.getElementById('cartToastTitle');
     const sub = document.getElementById('cartToastSub');
+    const icon = document.getElementById('cartToastIcon');
     if (toast && title) {
-        title.textContent = productName ? '"' + productName + '" added to cart!' : 'Item added to cart!';
-        if (sub) sub.textContent = 'Shopping cart updated successfully';
+        if (errorMessage) {
+            title.textContent = 'Could not add to cart';
+            if (sub) sub.textContent = errorMessage;
+            if (icon) { icon.style.background = 'var(--danger)'; icon.innerHTML = '<i class="fa-solid fa-xmark"></i>'; }
+        } else {
+            title.textContent = productName ? '"' + productName + '" added to cart!' : 'Item added to cart!';
+            if (sub) sub.textContent = 'Shopping cart updated successfully';
+            if (icon) { icon.style.background = 'var(--success)'; icon.innerHTML = '<i class="fa-solid fa-check"></i>'; }
+        }
         
         toast.style.transform = 'translateY(0)';
         toast.style.opacity = '1';
@@ -382,6 +415,23 @@ function showToast(productName) {
         }, 3000);
     }
 }
+
+function openLogoutConfirm(e) {
+    const modal = document.getElementById('logoutConfirmModal');
+    if (!modal) return true; // fall back to the logout confirmation page
+    if (e) e.preventDefault();
+    modal.classList.add('active');
+    return false;
+}
+
+function closeLogoutConfirm() {
+    const modal = document.getElementById('logoutConfirmModal');
+    if (modal) modal.classList.remove('active');
+}
+
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeLogoutConfirm();
+});
 </script>
 </body>
 </html>

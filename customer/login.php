@@ -37,6 +37,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             } else {
                 logActivity($user['id'], 'CUSTOMER_LOGIN', 'Customer logged in: ' . $user['email']);
+
+                // Restore the saved cart (and merge any items added before logging in)
+                unset($_SESSION['cart_synced_for']);
+                syncCustomerCart();
+
                 $redirect = $_SESSION['redirect_after_login'] ?? 'index.php';
                 unset($_SESSION['redirect_after_login']);
                 header("Location: $redirect");

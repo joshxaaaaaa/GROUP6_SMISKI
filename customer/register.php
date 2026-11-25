@@ -15,10 +15,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = sanitize($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $address = sanitize($_POST['address'] ?? '');
-    $phone = sanitize($_POST['phone'] ?? '');
+    $phone = trim($_POST['phone'] ?? '');
 
-    if (empty($name) || empty($email) || empty($password) || empty($address) || empty($phone)) {
+    if (empty($name) || empty($email) || empty($password) || empty($address) || $phone === '') {
         $error = 'Please fill in all required fields.';
+    } elseif (!isValidPhone($phone)) {
+        $error = 'Phone number must contain numbers only (7 to 15 digits, no letters, spaces or special characters).';
     } else {
         $db = getDB();
         $stmt = $db->prepare("SELECT id FROM users WHERE email = ?");
@@ -42,6 +44,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['user_role'] = 'customer';
                 $_SESSION['user_phone'] = $phone;
                 $_SESSION['user_address'] = $address;
+
+                // Save any items added to the cart before signing up
+                unset($_SESSION['cart_synced_for']);
+                syncCustomerCart();
 
                 $redirect = $_SESSION['redirect_after_login'] ?? 'index.php';
                 unset($_SESSION['redirect_after_login']);
@@ -288,7 +294,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <div class="form-group">
             <label for="phone">Phone Number</label>
-            <input type="text" id="phone" name="phone" class="input-control hover-scale" required placeholder="09123456789" value="<?= htmlspecialchars($_POST['phone'] ?? '') ?>">
+            <input type="tel" id="phone" name="phone" class="input-control hover-scale" required placeholder="09123456789" inputmode="numeric" pattern="[0-9]{7,15}" minlength="7" maxlength="15" autocomplete="tel" title="Numbers only (7 to 15 digits)" value="<?= htmlspecialchars($_POST['phone'] ?? '') ?>">
+            <small id="phoneError" style="display: none; color: #b91c1c; font-size: 0.78rem; font-weight: 600; margin-top: 0.35rem;">
+                <i class="fa-solid fa-circle-exclamation"></i> <span></span>
+            </small>
         </div>
 
         <div class="form-group">
@@ -323,6 +332,66 @@ function togglePassword(inputId, iconId) {
         icon.className = 'fa-solid fa-eye';
     }
 }
+
+(function () {
+    const phoneInput = document.getElementById('phone');
+    const phoneError = document.getElementById('phoneError');
+    const form = document.getElementById('registerForm');
+
+    function showPhoneError(msg) {
+        if (!phoneError) return;
+        phoneError.querySelector('span').textContent = msg;
+        phoneError.style.display = msg ? 'block' : 'none';
+    }
+
+    function validatePhone() {
+        const value = phoneInput.value;
+        if (value === '') {
+            phoneInput.setCustomValidity('Please enter your phone number.');
+            return false;
+        }
+        if (!/^[0-9]+$/.test(value)) {
+            phoneInput.setCustomValidity('Phone number must contain numbers only.');
+            return false;
+        }
+        if (value.length < 7 || value.length > 15) {
+            phoneInput.setCustomValidity('Phone number must be 7 to 15 digits long.');
+            return false;
+        }
+        phoneInput.setCustomValidity('');
+        return true;
+    }
+
+    // Block letters and special characters as they are typed
+    phoneInput.addEventListener('keydown', function (e) {
+        if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return; // allow shortcuts, arrows, backspace...
+        if (!/[0-9]/.test(e.key)) {
+            e.preventDefault();
+            showPhoneError('Only numbers (0-9) are allowed.');
+        }
+    });
+
+    // Strip anything that is not a digit (paste, autofill, mobile keyboards)
+    phoneInput.addEventListener('input', function () {
+        const digitsOnly = phoneInput.value.replace(/[^0-9]/g, '').slice(0, 15);
+        if (digitsOnly !== phoneInput.value) {
+            phoneInput.value = digitsOnly;
+            showPhoneError('Only numbers (0-9) are allowed.');
+        } else {
+            showPhoneError('');
+        }
+        validatePhone();
+    });
+
+    form.addEventListener('submit', function (e) {
+        if (!validatePhone()) {
+            e.preventDefault();
+            showPhoneError(phoneInput.validationMessage);
+            phoneInput.reportValidity();
+            phoneInput.focus();
+        }
+    });
+})();
 
 function clearForm() {
     document.getElementById('registerForm').reset();

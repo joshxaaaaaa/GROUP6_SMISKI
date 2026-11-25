@@ -243,6 +243,61 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             color: white;
         }
 
+        /* Logout confirmation dialog */
+        .logout-confirm-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(5, 46, 22, 0.85);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 5000;
+            padding: 1rem;
+        }
+        .logout-confirm-overlay.active {
+            display: flex;
+        }
+        .logout-confirm-card {
+            background: rgba(255, 255, 255, 0.92);
+            border-radius: 20px;
+            padding: 2rem;
+            max-width: 420px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+        }
+        .logout-confirm-card h3 {
+            color: #064e3b;
+            font-size: 1.2rem;
+            font-weight: 700;
+            margin: 0 0 1.5rem;
+        }
+        .logout-confirm-actions {
+            display: flex;
+            gap: 0.75rem;
+        }
+        .logout-confirm-actions button {
+            flex: 1;
+            padding: 0.75rem;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .logout-confirm-cancel {
+            background: #ffffff;
+            color: #15803d;
+            border: 1px solid rgba(74, 222, 128, 0.6);
+        }
+        .logout-confirm-ok {
+            background: #15803d;
+            color: #ffffff;
+            border: 1px solid #4ade80;
+        }
+
         /* Main Content Layout */
         .admin-main {
             margin-left: 260px;
@@ -535,11 +590,40 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
                     <span class="user-role">Administrator</span>
                 </div>
             </div>
-            <a href="logout.php" class="btn-sidebar-logout">
+            <a href="logout.php" class="btn-sidebar-logout" onclick="return openLogoutConfirm(event)">
                 <i class="fa-solid fa-right-from-bracket"></i> <span>Logout Account</span>
             </a>
         </div>
     </aside>
+
+    <!-- Logout Confirmation Dialog -->
+    <div class="logout-confirm-overlay" id="logoutConfirmModal" role="dialog" aria-modal="true" aria-labelledby="logoutConfirmTitle" onclick="if (event.target === this) closeLogoutConfirm()">
+        <div class="logout-confirm-card">
+            <i class="fa-solid fa-right-from-bracket" style="font-size: 1.8rem; color: #15803d; margin-bottom: 0.85rem;"></i>
+            <h3 id="logoutConfirmTitle">Are you sure you want to log out?</h3>
+            <form method="POST" action="logout.php" class="logout-confirm-actions">
+                <input type="hidden" name="confirm_logout" value="1">
+                <button type="button" class="logout-confirm-cancel" onclick="closeLogoutConfirm()">Cancel</button>
+                <button type="submit" class="logout-confirm-ok">Confirm</button>
+            </form>
+        </div>
+    </div>
+    <script>
+    function openLogoutConfirm(e) {
+        const modal = document.getElementById('logoutConfirmModal');
+        if (!modal) return true;
+        if (e) e.preventDefault();
+        modal.classList.add('active');
+        return false;
+    }
+    function closeLogoutConfirm() {
+        const modal = document.getElementById('logoutConfirmModal');
+        if (modal) modal.classList.remove('active');
+    }
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeLogoutConfirm();
+    });
+    </script>
 
     
     <div class="admin-main">

@@ -8,8 +8,9 @@
             Send us a message and our support team will respond shortly.
         </p>
 
-        <form action="home.php" method="POST">
+        <form action="index.php" method="POST" onsubmit="const b = this.querySelector('button[type=submit]'); if (b) { b.disabled = true; b.innerHTML = 'Sending...'; }">
             <input type="hidden" name="action" value="submit_contact">
+            <input type="hidden" name="form_token" value="<?= htmlspecialchars(generateFormToken('contact_form')) ?>">
             
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem; color: #dcfce7;">Name</label>

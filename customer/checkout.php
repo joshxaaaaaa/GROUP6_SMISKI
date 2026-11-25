@@ -13,6 +13,9 @@ if (function_exists('isCustomerLoggedIn') && !isCustomerLoggedIn()) {
     exit;
 }
 
+// Load the customer's saved cart so checkout matches what the cart shows
+syncCustomerCart();
+
 if (empty($_SESSION['cart'])) {
     header("Location: cart.php");
     exit;
@@ -179,11 +182,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $orderNum = $noStmt->fetchColumn();
 
             $itemStmt = $db->prepare("INSERT INTO order_items (order_id, product_id, product_name, quantity, price, subtotal) VALUES (?, ?, ?, ?, ?, ?)");
-            $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?");
+            // Only deduct stock when enough units are available (prevents negative stock)
+            $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ? AND stock_quantity >= ?");
+            $stockLeftStmt = $db->prepare("SELECT stock_quantity FROM products WHERE id = ?");
 
             foreach ($cartItems as $item) {
+                $stockStmt->execute([$item['quantity'], $item['id'], $item['quantity']]);
+                if ($stockStmt->rowCount() === 0) {
+                    $stockLeftStmt->execute([$item['id']]);
+                    $left = max(0, (int)$stockLeftStmt->fetchColumn());
+                    throw new Exception('Sorry, only ' . $left . ' unit(s) of "' . $item['name'] . '" are left in stock. Please update the quantity in your cart.');
+                }
                 $itemStmt->execute([$orderId, $item['id'], $item['name'], $item['quantity'], $item['price'], $item['subtotal']]);
-                $stockStmt->execute([$item['quantity'], $item['id']]);
             }
 
             $db->commit();
@@ -193,6 +203,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $_SESSION['cart'] = [];
+            persistCart(); // clear the saved cart as well
             $_SESSION['latest_order'] = [
                 'order_number' => $orderNum,
                 'total_amount' => $totalAmount,
@@ -203,7 +214,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
 
         } catch (Exception $e) {
-            $db->rollBack();
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
             $error = 'Failed to place order: ' . $e->getMessage();
         }
     }
