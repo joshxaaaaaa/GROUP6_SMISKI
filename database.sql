@@ -154,7 +154,7 @@ INSERT INTO categories (id, name, status) VALUES
 (17, 'Series 1', 'active'),
 (18, 'Bundle Series', 'active');
 
--- Insert 108 Individual Products (18 Categories * 6 Items per Category)
+-- Insert 102 individual products across 17 series and 17 series bundles.
 INSERT INTO products (name, description, category_id, price, stock_quantity, status) VALUES
 
 -- 1. Construction Series
@@ -313,8 +313,35 @@ INSERT INTO products (name, description, category_id, price, stock_quantity, sta
 ('Series 2 Bundle Series', 'Complete set of 6 Smiski Series 2 figures featuring kneeling, daydreaming, and pushing poses.', 18, 2994.00, 5, 'active'),
 ('Series 1 Bundle Series', 'Complete set of 6 original Smiski Series 1 figures featuring hugging knees and classic hiding poses.', 18, 2994.00, 5, 'active');
 
+-- Store paths relative to the project root, matching the product upload convention.
+UPDATE products
+SET image = CASE
+    WHEN category_id = 18 AND name = 'Construction Bundle Series' THEN 'assets/uploads/products/Construction Bundle Series.webp'
+    WHEN category_id = 18 AND name = 'Birthday Bundle Series' THEN 'assets/uploads/products/Birthday Bundle Series.webp'
+    WHEN category_id = 18 AND name = 'Smiski Sunday Bundle Series' THEN 'assets/uploads/products/Smiski Sunday Bundle Series.webp'
+    WHEN category_id = 18 AND name = 'Smiski Hippers Bundle Series' THEN 'assets/uploads/products/Smiski Hippers Bundle Series.jpg'
+    WHEN category_id = 18 AND name = 'Moving Bundle Series' THEN 'assets/uploads/products/Moving Bundle Series.webp'
+    WHEN category_id = 18 AND name = 'Exercising Bundle Series' THEN 'assets/uploads/products/Exercising Bundle Series.jpeg'
+    WHEN category_id = 18 AND name = 'Dressing Bundle Series' THEN 'assets/uploads/products/Dressing Bundle Series.webp'
+    WHEN category_id = 18 AND name = '@Work Bundle Series' THEN 'assets/uploads/products/@Work Bundle Series.jpg'
+    WHEN category_id = 18 AND name = 'Museum Bundle Series' THEN 'assets/uploads/products/Museum Bundle Series.png'
+    WHEN category_id = 18 AND name = 'Bed Bundle Series' THEN 'assets/uploads/products/Bed Bundle Series.jpg'
+    WHEN category_id = 18 AND name = 'Living Bundle Series' THEN 'assets/uploads/products/Smiski Daydreaming.png'
+    WHEN category_id = 18 AND name = 'Bath Bundle Series' THEN 'assets/uploads/products/Bath Bundle Series.png'
+    WHEN category_id = 18 AND name = 'Toilet Bundle Series' THEN 'assets/uploads/products/Toilet Bundle Series.jpg'
+    WHEN category_id = 18 AND name = 'Series 4 Bundle Series' THEN 'assets/uploads/products/Series 4 Bundle Series.png'
+    WHEN category_id = 18 AND name = 'Series 3 Bundle Series' THEN 'assets/uploads/products/Series 3 Bundle Series.jpeg'
+    WHEN category_id = 18 AND name = 'Series 2 Bundle Series' THEN 'assets/uploads/products/Series 2 Bundle Series.png'
+    WHEN category_id = 18 AND name = 'Series 1 Bundle Series' THEN 'assets/uploads/products/Series 1 Bundle Series.png'
+    WHEN category_id = 15 AND name = 'Smiski Hiding' THEN 'assets/uploads/products/Smiski Hiding1.png'
+    WHEN name = 'Smiski Fuzin&Raijin' THEN 'assets/uploads/products/Smiski Fuzin&amp;Raijin.png'
+    ELSE CONCAT('assets/uploads/products/', name, '.png')
+END
+WHERE id > 0;
+
 -- Insert System Settings
 INSERT INTO system_settings (setting_key, setting_value) VALUES
 ('shipping_cost', '120'),
 ('tax_rate', '12'),
-('pwd_senior_discount', '20');
+('pwd_senior_discount', '20')
+ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
