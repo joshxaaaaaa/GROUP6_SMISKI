@@ -1,8 +1,7 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 $orderInfo = $_SESSION['latest_order'] ?? null;
@@ -28,7 +27,6 @@ unset($_SESSION['latest_order']);
             padding: 1.5rem;
         }
 
-        /* White Frosted Glass Card (Matched with cart and checkout) */
         .smiski-card {
             background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(30px) saturate(180%);
@@ -49,7 +47,6 @@ unset($_SESSION['latest_order']);
             box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
         }
 
-        /* Subcards inside details */
         .smiski-subcard {
             background: rgba(255, 255, 255, 0.55) !important;
             backdrop-filter: blur(15px);
@@ -82,7 +79,6 @@ unset($_SESSION['latest_order']);
             font-weight: 500;
         }
 
-        /* Primary & Secondary Buttons */
         .btn-green-primary {
             background: #15803d !important;
             color: #ffffff !important;
@@ -133,7 +129,6 @@ unset($_SESSION['latest_order']);
             box-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
         }
 
-        /* Neon Glow Text for White Cards */
         .neon-glow-text {
             color: #064e3b !important;
             text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);

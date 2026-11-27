@@ -2,7 +2,6 @@
 
 
 if (session_status() === PHP_SESSION_NONE) {
-    // Session cookie cannot be read by JavaScript and is not sent on cross-site requests
     session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
@@ -14,8 +13,8 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Validation, CSRF, error handling and response helpers
 require_once __DIR__ . '/validation.php';
+require_once __DIR__ . '/store.php';
 
 define('DB_HOST', 'localhost');
 define('DB_PORT', '3307');
@@ -36,7 +35,6 @@ function getDB() {
             ];
             $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
         } catch (PDOException $e) {
-            // Never show connection details (host, user, password) to visitors
             logAppError('Database connection failed', $e);
             if (isAjaxRequest()) {
                 jsonResponse(503, ['success' => false, 'message' => MSG_SERVER_ERROR]);
@@ -76,19 +74,11 @@ function sanitize($data) {
 }
 
 
-/* ------------------------------------------------------------------
- * Phone number validation (numbers only, 7-15 digits)
- * ------------------------------------------------------------------ */
 function isValidPhone($phone) {
     return is_string($phone) && preg_match('/^[0-9]{7,15}$/', $phone) === 1;
 }
 
 
-/* ------------------------------------------------------------------
- * One-time form tokens (prevents duplicate submissions on refresh /
- * double click). Several tokens per form are kept so multiple open
- * tabs still work.
- * ------------------------------------------------------------------ */
 function generateFormToken($form) {
     $token = bin2hex(random_bytes(16));
     if (!isset($_SESSION['form_tokens'][$form]) || !is_array($_SESSION['form_tokens'][$form])) {
@@ -115,12 +105,6 @@ function consumeFormToken($form, $token) {
 }
 
 
-/* ------------------------------------------------------------------
- * Persistent shopping cart
- * The working cart stays in $_SESSION['cart'] ([product_id => qty]).
- * For logged-in customers it is also saved in the cart_items table so
- * it survives logout / re-login and new sessions.
- * ------------------------------------------------------------------ */
 function ensureCartTable() {
     static $ready = false;
     if ($ready) {
@@ -189,10 +173,6 @@ function saveCart($userId, array $cart) {
     }
 }
 
-/**
- * Loads the logged-in customer's saved cart into the session.
- * The first time after login, any items added as a guest are merged in.
- */
 function syncCustomerCart() {
     static $syncedThisRequest = false;
     if (!isset($_SESSION['cart']) || !is_array($_SESSION['cart'])) {
@@ -207,7 +187,6 @@ function syncCustomerCart() {
         $saved = loadSavedCart($userId);
 
         if (($_SESSION['cart_synced_for'] ?? null) !== $userId) {
-            // First sync for this login: merge guest cart into the saved cart
             $guestCart = $_SESSION['cart'];
             foreach ($guestCart as $productId => $qty) {
                 $productId = (int)$productId;
@@ -226,11 +205,9 @@ function syncCustomerCart() {
         $_SESSION['cart'] = $saved;
         $syncedThisRequest = true;
     } catch (Exception $e) {
-        // Database unavailable: keep using the session cart
     }
 }
 
-/** Saves the current session cart for the logged-in customer. */
 function persistCart() {
     if (!isCartCustomer()) {
         return;
@@ -239,9 +216,7 @@ function persistCart() {
         ensureCartTable();
         saveCart((int)$_SESSION['user_id'], $_SESSION['cart'] ?? []);
     } catch (Exception $e) {
-        // Keep the session cart even if saving fails
     }
 }
 
-// Every POST request must include a valid CSRF token (see config/validation.php)
 enforceCsrfOnPost();

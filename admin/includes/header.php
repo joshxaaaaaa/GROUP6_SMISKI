@@ -18,12 +18,12 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
     <script src="../assets/js/form-validation.js" defer></script>
     <style>
         :root {
-            --primary: #22c55e;          /* Vibrant Green */
-            --primary-hover: #16a34a;    /* Darker Green */
-            --dark-sidebar: #0f2e1b;     /* Deep Forest Matcha Header/Sidebar */
-            --sidebar-hover: #14532d;    /* Sidebar Hover State */
-            --sidebar-active: #22c55e;   /* Active Menu Green */
-            --light-bg: #14532d;         /* Rich Dark Green Background */
+            --primary: #22c55e;
+            --primary-hover: #16a34a;
+            --dark-sidebar: #0f2e1b;
+            --sidebar-hover: #14532d;
+            --sidebar-active: #22c55e;
+            --light-bg: #14532d;
             --gray-100: rgba(255, 255, 255, 0.05);
             --gray-200: rgba(187, 247, 208, 0.3);
             --gray-600: #dcfce7;
@@ -48,7 +48,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             min-height: 100vh;
         }
 
-        /* Sidebar Styles */
         .admin-sidebar {
             width: 260px;
             background: rgba(15, 46, 27, 0.95);
@@ -245,7 +244,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             color: white;
         }
 
-        /* Logout confirmation dialog */
         .logout-confirm-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -300,7 +298,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             border: 1px solid #4ade80;
         }
 
-        /* Main Content Layout */
         .admin-main {
             margin-left: 260px;
             flex: 1;
@@ -314,7 +311,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             margin-left: 0;
         }
 
-        /* Topbar Styles */
         .admin-topbar {
             background: rgba(20, 83, 45, 0.95);
             backdrop-filter: blur(12px);
@@ -406,7 +402,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             margin: 0 auto;
         }
 
-        /* Cards & Tables */
         .card {
             background: rgba(20, 83, 45, 0.95);
             backdrop-filter: blur(12px);
@@ -444,7 +439,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             color: #ffffff;
         }
 
-        /* Buttons & Badges */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -567,6 +561,12 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             <a href="orders.php" class="sidebar-nav-item <?= basename($_SERVER['PHP_SELF']) === 'orders.php' ? 'active' : '' ?>">
                 <i class="fa-solid fa-receipt"></i> <span>Orders</span>
             </a>
+            <a href="reviews.php" class="sidebar-nav-item <?= basename($_SERVER['PHP_SELF']) === 'reviews.php' ? 'active' : '' ?>">
+                <i class="fa-solid fa-star-half-stroke"></i> <span>Product Reviews</span>
+            </a>
+            <a href="discounts.php" class="sidebar-nav-item <?= basename($_SERVER['PHP_SELF']) === 'discounts.php' ? 'active' : '' ?>">
+                <i class="fa-solid fa-tags"></i> <span>Discounts</span>
+            </a>
             
             <div class="nav-section-title" style="margin-top: 1.5rem;">MONITORING</div>
             
@@ -598,7 +598,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
         </div>
     </aside>
 
-    <!-- Logout Confirmation Dialog -->
     <div class="logout-confirm-overlay" id="logoutConfirmModal" role="dialog" aria-modal="true" aria-labelledby="logoutConfirmTitle" onclick="if (event.target === this) closeLogoutConfirm()">
         <div class="logout-confirm-card">
             <i class="fa-solid fa-right-from-bracket" style="font-size: 1.8rem; color: #15803d; margin-bottom: 0.85rem;"></i>
@@ -646,6 +645,8 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
                             case 'orders.php': echo '<i class="fa-solid fa-receipt" style="color: #86efac;"></i> Order Records'; break;
                             case 'audit.php': echo '<i class="fa-solid fa-list-check" style="color: #86efac;"></i> System Audit Logs'; break;
                             case 'messages.php': echo '<i class="fa-solid fa-comments" style="color: #86efac;"></i> Customer Inquiries'; break;
+                            case 'reviews.php': echo '<i class="fa-solid fa-star-half-stroke" style="color: #86efac;"></i> Product Review Management'; break;
+                            case 'discounts.php': echo '<i class="fa-solid fa-tags" style="color: #86efac;"></i> Discount Management'; break;
                             default: echo '<i class="fa-solid fa-gauge" style="color: #86efac;"></i> Admin Dashboard'; break;
                         }
                         ?>
@@ -666,7 +667,6 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
 
         <div class="admin-content">
 <?php
-    // Notices set with setFlash() that the page itself did not display
     $adminFlashSuccess = getFlash('success');
     $adminFlashError = getFlash('error');
     if ($adminFlashSuccess !== '' || $adminFlashError !== ''):

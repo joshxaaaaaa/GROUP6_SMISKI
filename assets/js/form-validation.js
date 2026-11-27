@@ -1,20 +1,3 @@
-/*
- * Shared client-side form validation (customer + admin pages).
- *
- * Works automatically on every <form method="post"> and on forms with data-validate.
- * Uses normal HTML attributes: required, type="email", minlength, maxlength,
- * min, max, step, pattern, accept. Extra data attributes:
- *   data-phone-input            numbers only, 7-15 digits (letters/symbols blocked)
- *   data-password-strength      at least one letter and one number
- *   data-match="#otherField"    value must equal another field (password confirmation)
- *   data-max-size="5242880"     file size limit in bytes
- *   data-counter                show "x / max characters" under a textarea
- *   data-msg-required / data-msg-pattern / data-msg-min / data-msg-max   custom messages
- *   data-error-target="#id"     put the error message after another element
- *   data-no-lock                do not disable the submit button after submitting
- *
- * Frontend validation only improves usability - every rule is checked again in PHP.
- */
 (function () {
     'use strict';
 
@@ -51,14 +34,12 @@
         });
     }
 
-    /* ---------- where the message goes ---------- */
     function anchorFor(el) {
         if (el.dataset.errorTarget) {
             var target = document.querySelector(el.dataset.errorTarget);
             if (target) return target;
         }
         var parent = el.parentElement;
-        // inputs wrapped with an icon / show-password button
         if (parent && parent.children.length > 1 && /relative/.test(parent.getAttribute('style') || '') && parent.tagName === 'DIV') {
             return parent;
         }
@@ -108,7 +89,6 @@
         el.removeAttribute('aria-invalid');
     }
 
-    /* ---------- rules ---------- */
     function messageFor(el) {
         var value = isCheckable(el) ? '' : String(el.value || '');
         var trimmed = value.trim();
@@ -130,7 +110,6 @@
                     if (rule.slice(-2) === '/*') return (file.type || '').indexOf(rule.slice(0, -1)) === 0;
                     return file.type === rule;
                 });
-                // Some formats (e.g. HEIC) have no browser MIME type: let the server decide
                 if (!ok && file.type) return el.dataset.msgType || MSG.fileType;
             }
             return '';
@@ -177,6 +156,15 @@
             return MSG.passwordWeak;
         }
 
+        if (el.dataset.after) {
+            var earlier = document.querySelector(el.dataset.after);
+            if (earlier && earlier.value !== '' && value < earlier.value) return el.dataset.msgAfter || 'Please enter a valid date range.';
+        }
+        if (el.dataset.notMatch) {
+            var current = document.querySelector(el.dataset.notMatch);
+            if (current && current.value !== '' && current.value === value) return el.dataset.msgNotMatch || 'Your new password must be different from your current password.';
+        }
+
         if (el.dataset.match) {
             var other = document.querySelector(el.dataset.match);
             if (other && other.value !== value) return el.dataset.msgMatch || MSG.mismatch;
@@ -220,7 +208,6 @@
         return !message;
     }
 
-    /* ---------- phone fields ---------- */
     function setupPhone(el) {
         if (el._fvPhone) return;
         el._fvPhone = true;
@@ -242,7 +229,6 @@
         });
     }
 
-    /* ---------- character counters ---------- */
     function setupCounter(el) {
         var max = parseInt(el.getAttribute('maxlength') || '0', 10);
         if (!max || el._fvCounter) return;
@@ -259,12 +245,11 @@
         update();
     }
 
-    /* ---------- submit locking ---------- */
     function lockForm(form) {
         form.dataset.submitting = '1';
         var buttons = form.querySelectorAll('button[type="submit"], button:not([type]), input[type="submit"]');
         Array.prototype.forEach.call(buttons, function (btn) {
-            if (btn.name) { // keep the button's value in the request
+            if (btn.name) {
                 var hidden = document.createElement('input');
                 hidden.type = 'hidden';
                 hidden.name = btn.name;
@@ -295,7 +280,7 @@
     function setupForm(form) {
         if (form._fvReady) return;
         form._fvReady = true;
-        form.noValidate = true; // our messages replace the browser bubbles
+        form.noValidate = true;
 
         fields(form).forEach(function (el) {
             if (el.dataset.phoneInput !== undefined) setupPhone(el);
@@ -303,9 +288,7 @@
 
             var evt = (el.tagName === 'SELECT' || el.type === 'file' || isCheckable(el)) ? 'change' : 'input';
             el.addEventListener(evt, function () {
-                // remove/update the message as soon as the user corrects the field
                 if (el.classList.contains('is-invalid') || errorElFor(el)) validateField(el);
-                // keep "confirm password" in sync
                 if (form.querySelector('[data-match="#' + el.id + '"]')) {
                     var confirmEl = form.querySelector('[data-match="#' + el.id + '"]');
                     if (confirmEl.value !== '' && (confirmEl.classList.contains('is-invalid') || confirmEl.value.length >= el.value.length)) validateField(confirmEl);
@@ -317,14 +300,13 @@
         });
 
         form.addEventListener('submit', function (e) {
-            if (e.defaultPrevented) return; // e.g. a confirm() dialog was cancelled
+            if (e.defaultPrevented) return;
             if (form.dataset.submitting) {
                 e.preventDefault();
                 return;
             }
             var firstInvalid = null;
             fields(form).forEach(function (el) {
-                // skip fields inside hidden sections (e.g. card details when paying by COD)
                 if (el.offsetParent === null && el.type !== 'hidden' && !el.closest('[data-validate-hidden]')) {
                     var style = window.getComputedStyle(el);
                     if (style.position !== 'fixed') { clearError(el); return; }
@@ -357,11 +339,9 @@
             var method = (form.getAttribute('method') || 'get').toLowerCase();
             if (method === 'post' || form.dataset.validate !== undefined) setupForm(form);
         });
-        // phone fields outside POST forms
         Array.prototype.forEach.call(scope.querySelectorAll('input[data-phone-input]'), setupPhone);
     }
 
-    // Back/forward cache: re-enable buttons if the user returns to a submitted page
     window.addEventListener('pageshow', function (e) {
         if (e.persisted) Array.prototype.forEach.call(document.querySelectorAll('form[data-submitting]'), unlockForm);
     });
@@ -375,7 +355,6 @@
         unlock: unlockForm,
         messages: MSG
     };
-    // kept for pages that call it when filling a phone field from code
     window.clearPhoneError = function (input) { if (input) clearError(input); };
 
     if (document.readyState === 'loading') {

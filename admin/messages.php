@@ -7,7 +7,6 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
 $message = getFlash('success');
 $error = getFlash('error');
 $replyErrors = [];
@@ -76,7 +75,6 @@ $messagesList = $db->query("SELECT * FROM contact_messages ORDER BY id DESC")->f
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- Custom White Frosted Glassmorphism Messages Management Styles -->
 <style>
     body {
         background: linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%) !important;
@@ -85,7 +83,6 @@ require_once __DIR__ . '/includes/header.php';
         min-height: 100vh;
     }
 
-    /* White Frosted Glass Card Effect */
     .smiski-glass-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -103,13 +100,11 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Pure White Glow Text for Headings on Dark Background */
     .white-glow-heading {
         color: #ffffff !important;
         text-shadow: 0 0 10px rgba(255, 255, 255, 0.8), 0 0 20px rgba(134, 239, 172, 0.6), 0 2px 4px rgba(0,0,0,0.3);
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -120,14 +115,12 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Pure White Subtext for Dark Background */
     .white-subtext {
         color: rgba(255, 255, 255, 0.9) !important;
         font-weight: 500;
         text-shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
 
-    /* Form Inputs & Textarea */
     .smiski-input, .smiski-textarea {
         width: 100%;
         padding: 0.7rem 0.9rem;
@@ -150,7 +143,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 15px rgba(74, 222, 128, 0.4);
     }
 
-    /* Green Primary Button */
     .btn-green-glow {
         background: #15803d !important;
         color: #ffffff !important;
@@ -166,7 +158,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 20px rgba(74, 222, 128, 0.8), inset 0 0 8px rgba(74, 222, 128, 0.4);
     }
 
-    /* Action Buttons Glow */
     .btn-action-view {
         background: rgba(255, 255, 255, 0.9);
         color: #15803d;
@@ -251,7 +242,6 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="container" style="padding: 2rem 1rem; max-width: 1300px; margin: 0 auto;">
 
-    <!-- Page Header -->
     <div style="margin-bottom: 1.5rem;">
         <h2 class="white-glow-heading" style="font-size: 1.8rem; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 0.25rem;">
             <i class="fa-solid fa-comments" style="color: #86efac;"></i> Customer Messages
@@ -259,7 +249,6 @@ require_once __DIR__ . '/includes/header.php';
         <p class="white-subtext" style="font-size: 0.9rem;">View and manage inquiries sent through the Contact Us form</p>
     </div>
 
-    <!-- Alert Messages -->
     <?php if ($message): ?>
         <div style="background: rgba(220, 252, 231, 0.95); border: 1px solid rgba(74, 222, 128, 0.8); color: #15803d; padding: 0.85rem 1rem; border-radius: 12px; font-size: 0.9rem; margin-bottom: 1.5rem; font-weight: 600; backdrop-filter: blur(10px); box-shadow: 0 0 15px rgba(74, 222, 128, 0.3);">
             <i class="fa-solid fa-circle-check"></i> <?= htmlspecialchars($message) ?>
@@ -271,7 +260,6 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
-    <!-- Main Table Container -->
     <div class="smiski-glass-card" style="overflow: hidden;">
         <div style="overflow-x: auto;">
             <table class="custom-table">
@@ -344,7 +332,6 @@ require_once __DIR__ . '/includes/header.php';
 
 </div>
 
-<!-- View Modal -->
 <div id="viewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(5, 46, 22, 0.85); backdrop-filter: blur(10px); align-items: center; justify-content: center; z-index: 2000;">
     <div class="smiski-glass-card" style="padding: 2rem; width: 100%; max-width: 550px; position: relative; max-height: 90vh; overflow-y: auto; color: #1f2937;">
         <button type="button" onclick="closeViewModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
@@ -367,7 +354,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- Reply Modal -->
 <div id="replyModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(5, 46, 22, 0.85); backdrop-filter: blur(10px); align-items: center; justify-content: center; z-index: 2000;">
     <div class="smiski-glass-card" style="padding: 2rem; width: 100%; max-width: 500px; position: relative; color: #1f2937;">
         <button type="button" onclick="closeReplyModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
@@ -428,7 +414,6 @@ function openReplyModal(m, keepErrors) {
 }
 function closeReplyModal() { document.getElementById('replyModal').style.display = 'none'; }
 <?php if ($replyOld !== null): ?>
-// The last reply failed validation: show the form again with the typed reply and the error
 document.addEventListener('DOMContentLoaded', function () {
     openReplyModal(<?= json_encode($replyOld, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, true);
 });

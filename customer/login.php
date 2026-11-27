@@ -1,11 +1,10 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
-$error = getFlash('error');   // e.g. expired form
+$error = getFlash('error');
 $prompt = $_SESSION['login_prompt'] ?? '';
 unset($_SESSION['login_prompt']);
 $errors = [];
@@ -50,11 +49,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 logActivity($user['id'], 'CUSTOMER_LOGIN', 'Customer logged in: ' . $user['email']);
 
-                // Restore the saved cart (and merge any items added before logging in)
                 unset($_SESSION['cart_synced_for']);
                 syncCustomerCart();
 
-                // Only allow redirects to pages of this store (no open redirects)
                 $redirect = $_SESSION['redirect_after_login'] ?? 'index.php';
                 if (!is_string($redirect) || !preg_match('/^[a-z_]+\.php$/', $redirect)) {
                     $redirect = 'index.php';
@@ -94,7 +91,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #1f2937 !important;
         }
 
-        /* White Frosted Glass Card (Matched with cart, checkout, success, orders) */
         .smiski-card {
             background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(30px) saturate(180%);
@@ -116,7 +112,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: 500;
         }
 
-        /* Neon Glow Text for White Backgrounds */
         .neon-glow-text {
             color: #064e3b !important;
             text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -151,7 +146,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 0.4rem;
         }
         
-        /* Input Controls */
         .input-control {
             width: 100%;
             padding: 0.75rem 1rem;
@@ -173,7 +167,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 0 15px rgba(74, 222, 128, 0.4);
         }
 
-        /* Hover Scale Effect */
         .hover-scale {
             transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
         }
@@ -182,7 +175,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-color: #15803d !important;
         }
 
-        /* Buttons matching the theme */
         .btn-green-primary {
             background: #15803d !important;
             color: #ffffff !important;

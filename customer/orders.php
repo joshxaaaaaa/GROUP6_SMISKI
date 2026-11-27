@@ -1,13 +1,11 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 $db = getDB();
 
-// Order number: letters, numbers and dashes only (e.g. ORD-20261125-1234)
 $rawOrderNum = $_GET['order_number'] ?? '';
 $searchOrderNum = is_string($rawOrderNum) ? trim($rawOrderNum) : '';
 $searchError = '';
@@ -24,17 +22,14 @@ $isCustomer = isset($_SESSION['user_id']) && !isAdminLoggedIn();
 if (!empty($searchOrderNum)) {
     $searched = true;
     if ($isCustomer) {
-        // Customers can only look up THEIR OWN orders
         $stmt = $db->prepare("SELECT * FROM orders WHERE customer_id = ? AND (order_number = ? OR id = ?)");
         $stmt->execute([(int)$_SESSION['user_id'], $searchOrderNum, ctype_digit($searchOrderNum) ? (int)$searchOrderNum : 0]);
         $trackedOrder = $stmt->fetch();
     } elseif (isAdminLoggedIn()) {
-        // Admin store preview may look up any order
         $stmt = $db->prepare("SELECT * FROM orders WHERE order_number = ? OR id = ?");
         $stmt->execute([$searchOrderNum, ctype_digit($searchOrderNum) ? (int)$searchOrderNum : 0]);
         $trackedOrder = $stmt->fetch();
     } else {
-        // Guests must log in: order details include names, phone numbers and addresses
         $_SESSION['redirect_after_login'] = 'orders.php';
         $_SESSION['login_prompt'] = 'Please log in to track your orders.';
         header("Location: login.php", true, 303);
@@ -86,7 +81,6 @@ require_once __DIR__ . '/includes/header.php';
         min-height: 100vh;
     }
     
-    /* iOS Frosted Glass White Card Effect */
     .smiski-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -102,7 +96,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 30px 60px rgba(0, 0, 0, 0.45), 0 0 35px rgba(134, 239, 172, 0.6), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Subcards inside Details */
     .smiski-subcard {
         background: rgba(255, 255, 255, 0.55) !important;
         backdrop-filter: blur(15px);
@@ -117,7 +110,6 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Primary & Secondary Buttons aligned with Theme */
     .btn-green-primary {
         background: #15803d !important;
         color: #ffffff !important;
@@ -146,7 +138,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
     }
 
-    /* Hover Scale Effect */
     .hover-scale {
         transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
     }
@@ -156,7 +147,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 15px 35px rgba(0,0,0,0.3), 0 0 20px rgba(74, 222, 128, 0.4);
     }
 
-    /* Order Item List Card styling */
     .order-list-card {
         background: rgba(255, 255, 255, 0.65) !important;
         backdrop-filter: blur(15px);
@@ -175,7 +165,6 @@ require_once __DIR__ . '/includes/header.php';
         background: rgba(255, 255, 255, 0.9) !important;
     }
 
-    /* Green Glow-in-the-Dark Text Effect for Glass White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -184,7 +173,6 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="container" style="max-width: 1200px; margin: 0 auto; padding-top: 1.5rem; padding-bottom: 3rem;">
 
-    <!-- Top Search & Header Card -->
     <div class="smiski-card" style="padding: 2rem 2.5rem; margin-bottom: 2.5rem; border-radius: 24px;">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem;">
             <div>
@@ -235,10 +223,8 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php else: ?>
 
-        <!-- Master-Detail Split Layout -->
         <div style="display: flex; gap: 2rem; align-items: flex-start; flex-wrap: wrap;">
 
-            <!-- Left: Order Selection List (Sidebar) -->
             <div style="flex: 1; min-width: 300px; max-width: 360px; display: flex; flex-direction: column; gap: 0.75rem;">
                 <div style="font-size: 0.85rem; font-weight: 700; color: #ffffff; text-transform: uppercase; letter-spacing: 0.05em; padding-left: 0.25rem; margin-bottom: 0.25rem; text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);">
                     Select Order to View (<?= count($orders) ?>)
@@ -281,7 +267,6 @@ require_once __DIR__ . '/includes/header.php';
                 </div>
             </div>
 
-            <!-- Right: Active Order Details & Tracking Progress -->
             <div style="flex: 2; min-width: 320px;">
                 <?php foreach ($orders as $order): ?>
                     <?php
@@ -298,7 +283,6 @@ require_once __DIR__ . '/includes/header.php';
 
                     <div class="order-detail-pane smiski-card" id="order-pane-<?= $order['id'] ?>" style="display: <?= $isSelected ? 'block' : 'none' ?>; padding: 2rem; border-radius: 22px;">
                         
-                        <!-- Header Bar -->
                         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; padding-bottom: 1.25rem; border-bottom: 1px solid rgba(74, 222, 128, 0.3); margin-bottom: 1.75rem;">
                             <div>
                                 <span style="font-size: 0.78rem; color: #15803d; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">ACTIVE ORDER</span>
@@ -338,7 +322,6 @@ require_once __DIR__ . '/includes/header.php';
                             </div>
                         </div>
 
-                        <!-- 4-Step Tracker Visual -->
                         <?php if (!$isCancelled): ?>
                             <div class="smiski-subcard" style="margin-bottom: 2rem; padding: 1.75rem 1rem;">
                                 <div style="display: flex; justify-content: space-between; align-items: center; position: relative; max-width: 650px; margin: 0 auto;">
@@ -378,10 +361,8 @@ require_once __DIR__ . '/includes/header.php';
                             </div>
                         <?php endif; ?>
 
-                        <!-- Items & Delivery Split -->
                         <div style="display: flex; gap: 1.75rem; flex-wrap: wrap;">
 
-                            <!-- Left: Items -->
                             <div style="flex: 2; min-width: 280px;">
                                 <h4 class="neon-glow-text" style="font-size: 1rem; font-weight: 700; margin-bottom: 0.85rem;">
                                     <i class="fa-solid fa-boxes-packing" style="color: #15803d;"></i> Ordered Items (<?= count($items) ?>)
@@ -410,7 +391,6 @@ require_once __DIR__ . '/includes/header.php';
                                 </div>
                             </div>
 
-                            <!-- Right: Delivery & Payment Details -->
                             <div class="smiski-subcard" style="flex: 1; min-width: 250px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
                                 <div>
                                     <h4 class="neon-glow-text" style="font-size: 1rem; font-weight: 700; margin-bottom: 0.85rem;">

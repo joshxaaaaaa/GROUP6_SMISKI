@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/../../config/db.php';
 
-// Make sure a logged-in customer's saved cart is loaded so the badge is accurate
 syncCustomerCart();
 
 $cartCount = 0;
@@ -11,7 +10,6 @@ if (isset($_SESSION['cart']) && is_array($_SESSION['cart'])) {
     }
 }
 
-// Kunin ang pangalan ng kasalukuyang PHP file para sa active state
 $current_page = basename($_SERVER['PHP_SELF']);
 ?>
 <!DOCTYPE html>
@@ -25,11 +23,11 @@ $current_page = basename($_SERVER['PHP_SELF']);
     <link rel="stylesheet" href="../assets/css/form-feedback.css">
     <style>
         :root {
-            --primary: #22c55e;          /* Vibrant Green */
-            --primary-hover: #16a34a;    /* Darker Green */
+            --primary: #22c55e;
+            --primary-hover: #16a34a;
             --secondary: #14532d;
             --dark: #052e16;
-            --light: #14532d;            /* Match Admin Background */
+            --light: #14532d;
             --gray-100: rgba(255, 255, 255, 0.1);
             --gray-200: rgba(187, 247, 208, 0.3);
             --gray-600: #dcfce7;
@@ -56,7 +54,6 @@ $current_page = basename($_SERVER['PHP_SELF']);
             flex-direction: column;
         }
 
-        /* iOS Glassmorphism Header Style */
         .navbar {
             background: rgba(20, 83, 45, 0.45);
             backdrop-filter: blur(20px) saturate(180%);
@@ -107,7 +104,6 @@ $current_page = basename($_SERVER['PHP_SELF']);
             background: rgba(255, 255, 255, 0.1);
         }
 
-        /* Active Glow-in-the-Dark Link State */
         .nav-link.active {
             color: #86efac !important;
             background: rgba(134, 239, 172, 0.15) !important;
@@ -140,7 +136,6 @@ $current_page = basename($_SERVER['PHP_SELF']);
             transform: translateY(-1px);
         }
 
-        /* Active state para sa Cart button kapag nasa cart.php */
         .cart-btn-link.active {
             background: rgba(34, 197, 94, 1) !important;
             border-color: #86efac !important;
@@ -302,6 +297,9 @@ $current_page = basename($_SERVER['PHP_SELF']);
         <a href="about.php" class="nav-link <?= ($current_page == 'about.php') ? 'active' : '' ?>"><i class="fa-solid fa-circle-info"></i> About Us</a>
         <a href="orders.php" class="nav-link <?= ($current_page == 'orders.php') ? 'active' : '' ?>"><i class="fa-solid fa-receipt"></i> Track Orders</a>
         <a href="messages.php" class="nav-link <?= ($current_page == 'messages.php') ? 'active' : '' ?>"><i class="fa-solid fa-comments"></i> My Messages</a>
+        <?php if (isCustomerLoggedIn() && !isAdminLoggedIn()): ?>
+            <a href="profile.php" class="nav-link <?= in_array($current_page, ['profile.php', 'change_password.php'], true) ? 'active' : '' ?>"><i class="fa-solid fa-user-gear"></i> My Account</a>
+        <?php endif; ?>
         
         <?php if (isAdminLoggedIn()): ?>
             <button type="button" class="nav-link" disabled style="opacity:0.5; cursor:not-allowed; background:none; border:none; font-size:1rem;" title="Contact form disabled for Admin Mode"><i class="fa-solid fa-envelope"></i> Contact Us</button>
@@ -343,7 +341,6 @@ $current_page = basename($_SERVER['PHP_SELF']);
 
 
 <?php
-// Site-wide success / error notices (set with setFlash() before a redirect)
 $globalFlashSuccess = getFlash('success');
 $globalFlashError = getFlash('error');
 if ($globalFlashSuccess !== '' || $globalFlashError !== ''):
@@ -355,7 +352,6 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== ''):
 <?php endif; ?>
 
 <?php if (isset($_SESSION['user_id'])): ?>
-<!-- Logout Confirmation Dialog -->
 <div class="modal-overlay" id="logoutConfirmModal" role="dialog" aria-modal="true" aria-labelledby="logoutConfirmTitle" onclick="if (event.target === this) closeLogoutConfirm()">
     <div class="modal-card" style="max-width: 420px; text-align: center;">
         <div style="width: 56px; height: 56px; margin: 0 auto 1rem; border-radius: 50%; background: rgba(134, 239, 172, 0.15); border: 1px solid rgba(134, 239, 172, 0.4); display: flex; align-items: center; justify-content: center; font-size: 1.4rem; color: #86efac;">
@@ -384,7 +380,6 @@ if ($globalFlashSuccess !== '' || $globalFlashError !== ''):
 
 <script src="../assets/js/form-validation.js"></script>
 <script>
-// CSRF token for AJAX / state-changing requests
 window.CSRF_TOKEN = <?= json_encode(csrfToken()) ?>;
 
 function addToCart(productId, productName) {
@@ -444,7 +439,7 @@ function showToast(productName, errorMessage) {
 
 function openLogoutConfirm(e) {
     const modal = document.getElementById('logoutConfirmModal');
-    if (!modal) return true; // fall back to the logout confirmation page
+    if (!modal) return true;
     if (e) e.preventDefault();
     modal.classList.add('active');
     return false;

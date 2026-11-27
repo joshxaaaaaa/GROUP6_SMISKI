@@ -1,8 +1,7 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
@@ -11,16 +10,11 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
 $message = getFlash('success');
 $error = getFlash('error');
-$addErrors = [];  $addOld = null;    // Add Product form
-$editErrors = []; $editOld = null;   // Edit Product form
+$addErrors = [];  $addOld = null;
+$editErrors = []; $editOld = null;
 
-/**
- * Validates the product fields shared by Add and Edit.
- * Returns [values, errors, imageCheck].
- */
 function validateProductInput(PDO $db, Validator $v, $productId = null) {
     $values = [
         'name'           => $v->text('name', ['required' => true, 'min' => 2, 'max' => 200]),
@@ -44,7 +38,6 @@ function validateProductInput(PDO $db, Validator $v, $productId = null) {
         }
     }
 
-    // Same product name twice in one category is almost always a duplicate entry
     if (!$v->hasError('name') && $values['category_id'] !== null) {
         $dup = $db->prepare("SELECT id FROM products WHERE LOWER(name) = LOWER(?) AND category_id = ? AND id <> ?");
         $dup->execute([$values['name'], $values['category_id'], $productId ?? 0]);
@@ -184,7 +177,6 @@ require_once __DIR__ . '/includes/header.php';
         min-height: 100vh;
     }
 
-    /* White Frosted Glass Card Effect */
     .smiski-glass-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -202,13 +194,11 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Pure White Glow Text for Headings on Dark Background */
     .white-glow-heading {
         color: #ffffff !important;
         text-shadow: 0 0 10px rgba(255, 255, 255, 0.8), 0 0 20px rgba(134, 239, 172, 0.6), 0 2px 4px rgba(0,0,0,0.3);
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -219,14 +209,12 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Pure White Subtext for Dark Background */
     .white-subtext {
         color: rgba(255, 255, 255, 0.9) !important;
         font-weight: 500;
         text-shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
 
-    /* Form Inputs & Controls for White Cards */
     .smiski-input, .smiski-select, .smiski-textarea, .smiski-file {
         width: 100%;
         padding: 0.75rem 1rem;
@@ -253,7 +241,6 @@ require_once __DIR__ . '/includes/header.php';
         color: #1f2937;
     }
 
-    /* Green Primary Button */
     .btn-green-glow {
         background: #15803d !important;
         color: #ffffff !important;
@@ -269,7 +256,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 20px rgba(74, 222, 128, 0.8), inset 0 0 8px rgba(74, 222, 128, 0.4);
     }
 
-    /* Action Buttons */
     .btn-action-view {
         background: rgba(255, 255, 255, 0.7);
         color: #15803d;
@@ -565,7 +551,6 @@ function openAddModal() { document.getElementById('addModal').style.display = 'f
 function closeAddModal() { document.getElementById('addModal').style.display = 'none'; }
 
 function openEditModal(p, keepErrors) {
-    // Opening the form for a (different) product clears old validation messages
     if (!keepErrors && window.FormValidation) FormValidation.clearErrors(document.getElementById('editProductForm'));
     document.getElementById('edit_id').value = p.id;
     document.getElementById('edit_name').value = p.name;
@@ -603,11 +588,9 @@ function openViewModal(p) {
 }
 function closeViewModal() { document.getElementById('viewModal').style.display = 'none'; }
 <?php if ($addOld !== null): ?>
-// The last "Add Product" failed validation: show the form again with the entered values and errors
 document.addEventListener('DOMContentLoaded', openAddModal);
 <?php endif; ?>
 <?php if ($editOld !== null): ?>
-// The last edit failed validation: show the form again with the entered values and errors
 document.addEventListener('DOMContentLoaded', function () {
     openEditModal(<?= json_encode($editOld + ['image' => $existing['image'] ?? null], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, true);
 });

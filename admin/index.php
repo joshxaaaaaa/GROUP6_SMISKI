@@ -1,8 +1,7 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
@@ -21,7 +20,6 @@ $messageCount = $db->query("SELECT COUNT(*) FROM contact_messages")->fetchColumn
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- Custom White Frosted Glassmorphism Dashboard Styles -->
 <style>
     body {
         background: linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%) !important;
@@ -30,7 +28,6 @@ require_once __DIR__ . '/includes/header.php';
         min-height: 100vh;
     }
 
-    /* White Frosted Glass Card Effect */
     .smiski-glass-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -48,13 +45,11 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
     }
 
-    /* Pure White Glow Text for Headings on Dark Background */
     .white-glow-heading {
         color: #ffffff !important;
         text-shadow: 0 0 10px rgba(255, 255, 255, 0.8), 0 0 20px rgba(134, 239, 172, 0.6), 0 2px 4px rgba(0,0,0,0.3);
@@ -65,7 +60,6 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Icon Box */
     .smiski-icon-box {
         width: 50px;
         height: 50px;
@@ -84,7 +78,6 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="container" style="padding: 2rem 1rem; max-width: 1200px; margin: 0 auto;">
 
-    <!-- Welcome Banner -->
     <div class="smiski-glass-card" style="padding: 2.5rem 2rem; margin-bottom: 2rem;">
         <h1 class="neon-glow-text" style="font-size: 2rem; font-weight: 800; margin-bottom: 0.5rem; letter-spacing: -0.025em;">
             Welcome back, <?= htmlspecialchars($_SESSION['user_name'] ?? 'Admin') ?>!
@@ -100,7 +93,6 @@ require_once __DIR__ . '/includes/header.php';
 
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem;">
 
-        <!-- Inventory Card -->
         <a href="inventory.php" style="text-decoration: none; color: inherit;">
             <div class="smiski-glass-card" style="padding: 1.75rem;">
                 <div class="smiski-icon-box">
@@ -115,7 +107,6 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </a>
 
-        <!-- Customers Card -->
         <a href="customers.php" style="text-decoration: none; color: inherit;">
             <div class="smiski-glass-card" style="padding: 1.75rem;">
                 <div class="smiski-icon-box">
@@ -130,7 +121,6 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </a>
 
-        <!-- Orders Card -->
         <a href="orders.php" style="text-decoration: none; color: inherit;">
             <div class="smiski-glass-card" style="padding: 1.75rem;">
                 <div class="smiski-icon-box">
@@ -145,7 +135,6 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </a>
 
-        <!-- Reports Card -->
         <a href="reports.php" style="text-decoration: none; color: inherit;">
             <div class="smiski-glass-card" style="padding: 1.75rem;">
                 <div class="smiski-icon-box">
@@ -160,7 +149,6 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </a>
 
-        <!-- Audit Logs Card -->
         <a href="audit.php" style="text-decoration: none; color: inherit;">
             <div class="smiski-glass-card" style="padding: 1.75rem;">
                 <div class="smiski-icon-box">
@@ -175,7 +163,6 @@ require_once __DIR__ . '/includes/header.php';
             </div>
         </a>
 
-        <!-- Customer Messages Card -->
         <a href="messages.php" style="text-decoration: none; color: inherit;">
             <div class="smiski-glass-card" style="padding: 1.75rem;">
                 <div class="smiski-icon-box">

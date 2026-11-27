@@ -1,8 +1,7 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (isAdminLoggedIn()) {
@@ -10,7 +9,7 @@ if (isAdminLoggedIn()) {
     exit;
 }
 
-$error = getFlash('error');   // e.g. expired form or session
+$error = getFlash('error');
 $errors = [];
 $old = ['email' => 'admin@admin.com'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -33,7 +32,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$email]);
         $user = $stmt->fetch();
 
-        // Seeded admin accounts may still store a plain-text password: accept it once, then hash it
         $isHashed = $user && password_get_info($user['password'])['algo'] !== null && password_get_info($user['password'])['algo'] !== 0;
         $valid = $user && ($isHashed
             ? password_verify($password, $user['password'])
@@ -66,7 +64,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- CSS Reset & Custom White Frosted Glassmorphism Styles -->
 <style>
     html, body {
         margin: 0 !important;
@@ -77,7 +74,6 @@ require_once __DIR__ . '/includes/header.php';
         font-family: 'Outfit', sans-serif;
     }
 
-    /* White Frosted Glass Card */
     .smiski-admin-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -94,13 +90,11 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
     }
 
-    /* Input Controls for White Cards */
     .input-control-admin {
         width: 100%;
         padding: 0.75rem 1rem;
@@ -122,7 +116,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 15px rgba(74, 222, 128, 0.4);
     }
 
-    /* Green Primary Button */
     .btn-green-glow {
         background: #15803d !important;
         color: #ffffff !important;
@@ -138,7 +131,6 @@ require_once __DIR__ . '/includes/header.php';
     }
 </style>
 
-<!-- Fullscreen Matcha Background Container -->
 <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; background: linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%); z-index: 999; overflow-y: auto;">
     
     <div class="smiski-admin-card" style="color: #1f2937; padding: 2.5rem; width: 100%; max-width: 400px; margin: auto;">

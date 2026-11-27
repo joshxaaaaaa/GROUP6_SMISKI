@@ -9,7 +9,6 @@
         </p>
 
         <?php
-        // Errors / entered values from a failed Contact Us submission (see customer/index.php)
         $contactState = $contactFormState ?? ['errors' => [], 'old' => []];
         $cErr = $contactState['errors'];
         $cOld = $contactState['old'];
@@ -67,7 +66,6 @@ function closeContactPane() {
     document.getElementById('contactModal').classList.remove('active');
 }
 <?php if (!empty($cErr)): ?>
-// Re-open the Contact Us form so the customer can fix the highlighted fields
 document.addEventListener('DOMContentLoaded', openContactPane);
 <?php endif; ?>
 </script>

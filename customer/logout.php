@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/../config/db.php';
 
-// Log out only after the user confirmed (POST from the confirmation dialog)
 $confirmed = $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['confirm_logout'] ?? '') === '1';
 
 if (!isset($_SESSION['user_id'])) {
@@ -10,7 +9,6 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 if (!$confirmed) {
-    // Fallback confirmation page (e.g. logout.php opened directly or JavaScript disabled)
     $cancelUrl = 'home.php';
     $referer = $_SERVER['HTTP_REFERER'] ?? '';
     if ($referer !== '' && parse_url($referer, PHP_URL_HOST) === ($_SERVER['HTTP_HOST'] ?? '') && strpos($referer, 'logout.php') === false) {
@@ -57,9 +55,6 @@ $role = $_SESSION['user_role'] ?? 'customer';
 $action = ($role === 'admin') ? 'ADMIN_LOGOUT' : 'CUSTOMER_LOGOUT';
 logActivity($_SESSION['user_id'], $action, ucfirst($role) . ' logged out: ' . ($_SESSION['user_email'] ?? ''));
 
-// Cart items are already saved in the database (cart_items) on every change,
-// so they are restored on the next login.
-// Burahin ang lahat kasama ang cart para pag naging guest, walang makikitang cart
 session_unset();
 session_destroy();
 

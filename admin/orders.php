@@ -1,8 +1,7 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
@@ -14,17 +13,12 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
 $message = getFlash('success');
 $error = getFlash('error');
 
 $validOrderStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
-// Final statuses: once reached, the order status can no longer be changed
 $lockedOrderStatuses = ['delivered', 'cancelled'];
 
-/**
- * Returns '' when the status change is allowed, otherwise the reason it is not.
- */
 function orderStatusChangeError($fromStatus, $toStatus, array $validStatuses, array $lockedStatuses) {
     if (!in_array($toStatus, $validStatuses, true)) {
         return 'Invalid order status selected.';
@@ -38,7 +32,6 @@ function orderStatusChangeError($fromStatus, $toStatus, array $validStatuses, ar
     return '';
 }
 
-/** Puts the items of an order back into inventory. */
 function restoreOrderStock(PDO $db, $orderId) {
     $items = $db->prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?");
     $items->execute([$orderId]);
@@ -55,7 +48,6 @@ try {
     
 }
 
-// AJAX: order details for the "Details" dialog (returns an HTML fragment; errors return JSON)
 if (isset($_GET['ajax_details'])) {
     $rawOrderId = $_GET['ajax_details'];
     if (!is_string($rawOrderId) || !ctype_digit($rawOrderId) || (int)$rawOrderId < 1) {
@@ -137,7 +129,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->rollBack();
                     $error = 'Payment cannot be approved because this order is already ' . ucfirst($prevStatus) . '.';
                 } else {
-                    // Move a pending order to Processing; keep later statuses (e.g. Shipped) as they are
                     $newStatus = ($prevStatus === 'pending') ? 'processing' : $prevStatus;
                     $stmt = $db->prepare("UPDATE orders SET payment_status = 'paid', status = ? WHERE id = ?");
                     $stmt->execute([$newStatus, $id]);
@@ -189,7 +180,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($id > 0) {
             try {
                 $db->beginTransaction();
-                // Lock the order row so two updates can't adjust stock twice
                 $cur = $db->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
                 $cur->execute([$id]);
                 $prevStatus = $cur->fetchColumn();
@@ -206,7 +196,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $message = 'No changes made. The order is already ' . ucfirst($status) . '.';
                 } else {
                     if ($status === 'cancelled') {
-                        // Cancelling puts the reserved items back into inventory
                         restoreOrderStock($db, $id);
                     }
 
@@ -240,7 +229,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db->rollBack();
                     $error = 'This order no longer exists.';
                 } else {
-                    // Delivered items have left the inventory and cancelled orders were already restocked
                     if (!in_array($prevStatus, ['cancelled', 'delivered'], true)) {
                         restoreOrderStock($db, $id);
                     }
@@ -258,7 +246,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Post/Redirect/Get: show the result after a redirect so refreshing never repeats the action
     if ($message !== '') setFlash('success', $message);
     if ($error !== '') setFlash('error', $error);
     redirectTo('orders.php');
@@ -282,7 +269,6 @@ require_once __DIR__ . '/includes/header.php';
         font-family: 'Outfit', sans-serif;
     }
 
-    /* White Frosted Glass Card Effect */
     .smiski-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -301,7 +287,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Subcards inside modals or sections */
     .smiski-subcard {
         background: rgba(255, 255, 255, 0.85) !important;
         backdrop-filter: blur(15px);
@@ -312,13 +297,11 @@ require_once __DIR__ . '/includes/header.php';
         padding: 1.25rem;
     }
 
-    /* Pure White Glow Text for Headings on Dark Background */
     .white-glow-heading {
         color: #ffffff !important;
         text-shadow: 0 0 10px rgba(255, 255, 255, 0.8), 0 0 20px rgba(134, 239, 172, 0.6), 0 2px 4px rgba(0,0,0,0.3);
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -329,14 +312,12 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Pure White Subtext for Dark Background */
     .white-subtext {
         color: rgba(255, 255, 255, 0.9) !important;
         font-weight: 500;
         text-shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
 
-    /* Primary and Secondary Glow Buttons */
     .btn-green-primary {
         background: #15803d !important;
         color: #ffffff !important;
@@ -408,7 +389,6 @@ require_once __DIR__ . '/includes/header.php';
         background: rgba(220, 252, 231, 0.4);
     }
 
-    /* Modal Backdrop style */
     .smiski-modal-backdrop {
         display: none;
         position: fixed;
@@ -546,7 +526,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- Receipt Modal -->
 <div id="receiptModal" class="smiski-modal-backdrop">
     <div class="smiski-card" style="max-width: 550px; width: 100%; position: relative; text-align: center; margin: 0; color: #1f2937;">
         <button onclick="closeReceiptModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;">&times;</button>
@@ -589,7 +568,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- Status Modal -->
 <div id="statusModal" class="smiski-modal-backdrop">
     <div class="smiski-card" style="max-width: 500px; width: 100%; position: relative; text-align: left; margin: 0; color: #1f2937;">
         <button onclick="closeStatusModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;">&times;</button>
@@ -626,7 +604,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- View Details Modal -->
 <div id="viewModal" class="smiski-modal-backdrop">
     <div class="smiski-card" style="max-width: 650px; width: 100%; position: relative; text-align: left; max-height: 90vh; overflow-y: auto; margin: 0; color: #1f2937;">
         <button onclick="closeViewModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;">&times;</button>
@@ -657,7 +634,6 @@ function openReceiptModal(o) {
         if (notice) notice.style.display = 'block';
     }
 
-    // Payments of Delivered / Cancelled orders can no longer be approved (and Delivered can't be rejected)
     const status = (o.status || '').toLowerCase();
     const approveBtn = document.getElementById('receipt_approve_btn');
     const rejectBtn = document.getElementById('receipt_reject_btn');
@@ -693,7 +669,6 @@ function openStatusModal(o) {
     const locked = (current === 'delivered' || current === 'cancelled');
 
     select.value = current;
-    // Final statuses (Delivered / Cancelled) can't be changed to anything else
     Array.from(select.options).forEach(opt => {
         opt.disabled = locked && opt.value !== current;
     });

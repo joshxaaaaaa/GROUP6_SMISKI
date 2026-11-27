@@ -1,8 +1,7 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
@@ -11,11 +10,10 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
 $message = getFlash('success');
 $error = getFlash('error');
-$editErrors = [];     // field => message for the Edit Customer form
-$editOld = null;      // entered values when the edit failed validation
+$editErrors = [];
+$editOld = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $v = new Validator($_POST);
@@ -76,7 +74,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'delete') {
         try {
-            // Customers with orders are deactivated instead, so order history and stock records stay consistent
             $orderCount = $db->prepare("SELECT COUNT(*) FROM orders WHERE customer_id = ?");
             $orderCount->execute([$id]);
             if ((int)$orderCount->fetchColumn() > 0) {
@@ -101,7 +98,6 @@ $customers = $db->query("SELECT * FROM users WHERE role = 'customer' ORDER BY id
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- Custom White Frosted Glassmorphism Customers Management Styles -->
 <style>
     body {
         background: linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%) !important;
@@ -110,7 +106,6 @@ require_once __DIR__ . '/includes/header.php';
         min-height: 100vh;
     }
 
-    /* White Frosted Glass Card Effect */
     .smiski-glass-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -128,13 +123,11 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Pure White Glow Text for Headings on Dark Background */
     .white-glow-heading {
         color: #ffffff !important;
         text-shadow: 0 0 10px rgba(255, 255, 255, 0.8), 0 0 20px rgba(134, 239, 172, 0.6), 0 2px 4px rgba(0,0,0,0.3);
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -145,14 +138,12 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Pure White Subtext for Dark Background */
     .white-subtext {
         color: rgba(255, 255, 255, 0.9) !important;
         font-weight: 500;
         text-shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
 
-    /* Input & Select Controls for White Cards */
     .smiski-input, .smiski-select, .smiski-textarea {
         width: 100%;
         padding: 0.75rem 1rem;
@@ -179,7 +170,6 @@ require_once __DIR__ . '/includes/header.php';
         color: #1f2937;
     }
 
-    /* Green Primary Button */
     .btn-green-glow {
         background: #15803d !important;
         color: #ffffff !important;
@@ -195,7 +185,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 20px rgba(74, 222, 128, 0.8), inset 0 0 8px rgba(74, 222, 128, 0.4);
     }
 
-    /* Action Buttons */
     .btn-action-view {
         background: rgba(255, 255, 255, 0.7);
         color: #15803d;
@@ -250,7 +239,6 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="container" style="padding: 2rem 1rem; max-width: 1300px; margin: 0 auto;">
 
-    <!-- Page Header -->
     <div style="margin-bottom: 1.5rem;">
         <h2 class="white-glow-heading" style="font-size: 1.8rem; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 0.25rem;">
             <i class="fa-solid fa-users" style="color: #86efac;"></i> Customer Records Management
@@ -258,7 +246,6 @@ require_once __DIR__ . '/includes/header.php';
         <p class="white-subtext" style="font-size: 0.9rem;">View and manage registered customer user accounts</p>
     </div>
 
-    <!-- Alert Message -->
     <?php if ($message): ?>
         <div style="background: rgba(220, 252, 231, 0.95); border: 1px solid rgba(74, 222, 128, 0.6); color: #064e3b; padding: 0.85rem 1rem; border-radius: 12px; font-size: 0.9rem; margin-bottom: 1.5rem; font-weight: 600; box-shadow: 0 5px 15px rgba(0,0,0,0.15);">
             <i class="fa-solid fa-circle-check" style="color: #15803d;"></i> <?= htmlspecialchars($message) ?>
@@ -271,7 +258,6 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
-    <!-- Main Table Container -->
     <div class="smiski-glass-card" style="overflow: hidden;">
         <div style="overflow-x: auto;">
             <table style="width: 100%; border-collapse: collapse; text-align: left;">
@@ -329,7 +315,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- View Modal -->
 <div id="viewModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(5, 46, 22, 0.85); backdrop-filter: blur(10px); align-items: center; justify-content: center; z-index: 2000;">
     <div class="smiski-glass-card" style="padding: 2rem; width: 100%; max-width: 500px; position: relative; color: #1f2937;">
         <button onclick="closeViewModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
@@ -347,7 +332,6 @@ require_once __DIR__ . '/includes/header.php';
     </div>
 </div>
 
-<!-- Edit Modal -->
 <div id="editModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(5, 46, 22, 0.85); backdrop-filter: blur(10px); align-items: center; justify-content: center; z-index: 2000;">
     <div class="smiski-glass-card" style="padding: 2rem; width: 100%; max-width: 500px; position: relative; max-height: 90vh; overflow-y: auto; color: #1f2937;">
         <button onclick="closeEditModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
@@ -409,7 +393,6 @@ function openViewModal(c) {
 function closeViewModal() { document.getElementById('viewModal').style.display = 'none'; }
 
 function openEditModal(c, keepErrors) {
-    // Opening the form for a (different) customer clears old validation messages
     if (!keepErrors && window.FormValidation) FormValidation.clearErrors(document.getElementById('editCustomerForm'));
     document.getElementById('edit_id').value = c.id;
     document.getElementById('edit_name').value = c.full_name;
@@ -422,7 +405,6 @@ function openEditModal(c, keepErrors) {
 }
 function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
 <?php if ($editOld !== null): ?>
-// The last edit failed validation: show the form again with the entered values and errors
 document.addEventListener('DOMContentLoaded', function () { openEditModal(<?= json_encode($editOld, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, true); });
 <?php endif; ?>
 </script>

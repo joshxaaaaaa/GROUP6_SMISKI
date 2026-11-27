@@ -1,20 +1,5 @@
 <?php
-/* ======================================================================
- * Central validation, security and error-handling helpers.
- * Loaded automatically by config/db.php, so every page can use them.
- *
- *  1. Error handling  - safe user messages, technical details only in the log
- *  2. Responses       - JSON helpers + HTTP status codes for AJAX requests
- *  3. Flash messages  - success / error notices that survive a redirect
- *  4. CSRF protection - token on every POST form (checked automatically)
- *  5. Validator       - field-by-field rules with standard error messages
- *  6. File uploads    - MIME/content checks, size limit, safe file names
- *  7. Abuse limits    - failed-login throttling, message rate limits
- * ====================================================================== */
 
-/* ----------------------------------------------------------------------
- * Standard user-facing messages (kept in one place for consistency)
- * -------------------------------------------------------------------- */
 const MSG_REQUIRED          = 'This field is required.';
 const MSG_EMPTY             = 'This field cannot be empty.';
 const MSG_EMAIL             = 'Please enter a valid email address.';
@@ -44,14 +29,10 @@ function msgInsufficientStock($available) {
     return 'Insufficient stock. Only ' . max(0, (int)$available) . ' item(s) available.';
 }
 
-/* ----------------------------------------------------------------------
- * 1. Error handling
- * -------------------------------------------------------------------- */
 error_reporting(E_ALL);
-ini_set('display_errors', '0');      // never show PHP errors / stack traces to users
-ini_set('log_errors', '1');          // technical details go to the server error log
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 
-/** Writes a technical error to the server log (never shown to users). */
 function logAppError($context, $error = null) {
     $detail = '';
     if ($error instanceof Throwable) {
@@ -63,7 +44,6 @@ function logAppError($context, $error = null) {
     error_log('[SMISKI] ' . $context . ' | ' . $where . ($detail !== '' ? ' | ' . $detail : ''));
 }
 
-/** Exception whose message is safe to show to the user (business-rule errors). */
 class UserFacingException extends RuntimeException {
     private $httpStatus;
     public function __construct($message, $httpStatus = 422) {
@@ -73,7 +53,6 @@ class UserFacingException extends RuntimeException {
     public function getHttpStatus() { return $this->httpStatus; }
 }
 
-/** Message to show for any exception: its own text if user-facing, otherwise generic (and logged). */
 function safeErrorMessage(Throwable $e, $context = 'Unexpected error') {
     if ($e instanceof UserFacingException) {
         return $e->getMessage();
@@ -121,9 +100,6 @@ register_shutdown_function(function () {
     }
 });
 
-/* ----------------------------------------------------------------------
- * 2. Responses
- * -------------------------------------------------------------------- */
 function isAjaxRequest() {
     $requestedWith = strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '');
     $accept = strtolower($_SERVER['HTTP_ACCEPT'] ?? '');
@@ -132,10 +108,6 @@ function isAjaxRequest() {
         || isset($_GET['ajax']);
 }
 
-/**
- * Sends a structured JSON response and stops.
- * Format: { "success": bool, "message": string, "errors": {field: message}, ...extra data }
- */
 function jsonResponse($status, array $payload) {
     if (!headers_sent()) {
         http_response_code($status);
@@ -146,7 +118,6 @@ function jsonResponse($status, array $payload) {
     exit;
 }
 
-/** Same-host URL to send the user back to (falls back to $default). */
 function safeRedirectTarget($default) {
     $referer = $_SERVER['HTTP_REFERER'] ?? '';
     if ($referer !== '' && parse_url($referer, PHP_URL_HOST) === ($_SERVER['HTTP_HOST'] ?? '')) {
@@ -155,16 +126,11 @@ function safeRedirectTarget($default) {
     return $default;
 }
 
-/** 303 redirect (the browser follows with GET, so refreshing never re-posts). */
 function redirectTo($url) {
     header('Location: ' . $url, true, 303);
     exit;
 }
 
-/**
- * Stops the request with an error: JSON for AJAX, otherwise a flash message
- * and a redirect (or an error page when there is nowhere sensible to go back to).
- */
 function abortRequest($status, $message, $redirect = null, array $errors = []) {
     if (isAjaxRequest()) {
         $payload = ['success' => false, 'message' => $message];
@@ -181,9 +147,6 @@ function abortRequest($status, $message, $redirect = null, array $errors = []) {
     exit;
 }
 
-/* ----------------------------------------------------------------------
- * 3. Flash messages and form state (Post/Redirect/Get)
- * -------------------------------------------------------------------- */
 function setFlash($type, $message) {
     $_SESSION['flash'][$type] = $message;
 }
@@ -194,7 +157,6 @@ function getFlash($type) {
     return $message;
 }
 
-/** Keeps validation errors + entered values across a redirect (secrets are never kept). */
 function setFormState($form, array $errors, array $old = []) {
     foreach (['password', 'password_confirm', 'card_number', 'card_cvv', 'card_expiry', 'csrf_token', 'form_token'] as $secret) {
         unset($old[$secret]);
@@ -208,7 +170,6 @@ function takeFormState($form) {
     return $state;
 }
 
-/** Escaped HTML for a field's error message (empty string when the field is valid). */
 function fieldError(array $errors, $field) {
     if (empty($errors[$field])) {
         return '';
@@ -217,17 +178,14 @@ function fieldError(array $errors, $field) {
         . htmlspecialchars($errors[$field], ENT_QUOTES, 'UTF-8') . '</span></div>';
 }
 
-/** CSS class for an invalid field. */
 function invalidClass(array $errors, $field) {
     return empty($errors[$field]) ? '' : ' is-invalid';
 }
 
-/** aria-invalid attribute for an invalid field. */
 function invalidAttr(array $errors, $field) {
     return empty($errors[$field]) ? '' : ' aria-invalid="true"';
 }
 
-/** Page-level notice. $type: success | error | info. */
 function alertBox($type, $message) {
     if ($message === '' || $message === null) {
         return '';
@@ -238,20 +196,15 @@ function alertBox($type, $message) {
         . '<i class="fa-solid ' . $icon . '"></i> <span>' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</span></div>';
 }
 
-/** Escaped value of a previously entered field. */
 function oldValue(array $old, $field, $default = '') {
     $value = $old[$field] ?? $default;
     return htmlspecialchars(is_scalar($value) ? (string)$value : '', ENT_QUOTES, 'UTF-8');
 }
 
-/** Escaped JSON for use inside an HTML attribute (e.g. onclick='fn(...)'). */
 function jsonAttr($value) {
     return htmlspecialchars(json_encode($value, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8');
 }
 
-/* ----------------------------------------------------------------------
- * 4. CSRF protection
- * -------------------------------------------------------------------- */
 function csrfToken() {
     if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -263,7 +216,6 @@ function csrfField() {
     return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') . '">';
 }
 
-/** Query-string fragment for state-changing links (e.g. cart buttons). */
 function csrfQuery() {
     return 'csrf_token=' . urlencode(csrfToken());
 }
@@ -273,21 +225,18 @@ function isValidCsrfToken($token) {
         && is_string($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
-/** For state-changing GET links: checks the token in the URL. */
 function requireCsrfFromQuery($redirect) {
     if (!isValidCsrfToken($_GET['csrf_token'] ?? '')) {
         abortRequest(403, MSG_SESSION_EXPIRED, $redirect);
     }
 }
 
-/** Runs on every request: every POST must carry a valid CSRF token. */
 function enforceCsrfOnPost() {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         return;
     }
     $backTo = strtok($_SERVER['REQUEST_URI'] ?? '/', '#');
 
-    // A body bigger than post_max_size makes PHP drop all POST data and files
     $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
     if (empty($_POST) && empty($_FILES) && $contentLength > 0) {
         abortRequest(413, MSG_FILE_SIZE . ' (Maximum 5 MB.)', $backTo);
@@ -299,12 +248,6 @@ function enforceCsrfOnPost() {
     }
 }
 
-/* ----------------------------------------------------------------------
- * 5. Validator
- *    $v = new Validator($_POST);
- *    $email = $v->email('email');
- *    if ($v->fails()) { $errors = $v->errors(); }
- * -------------------------------------------------------------------- */
 class Validator {
     private $data;
     private $errors = [];
@@ -323,7 +266,6 @@ class Validator {
         }
     }
 
-    /** Raw string value, or null when the field was sent as an array / unexpected type. */
     private function raw($field) {
         if (!array_key_exists($field, $this->data) || $this->data[$field] === null) {
             return '';
@@ -335,12 +277,6 @@ class Validator {
         return (string)$value;
     }
 
-    /**
-     * Text field. Options: required, min, max, multiline, pattern, patternMessage,
-     * emptyMessage, minMessage, maxMessage.
-     * Returns the trimmed value. Characters are kept as typed (no HTML-encoding on input);
-     * pages escape values when they display them.
-     */
     public function text($field, array $o = []) {
         $value = $this->raw($field);
         if ($value === null || !mb_check_encoding($value, 'UTF-8')) {
@@ -348,7 +284,7 @@ class Validator {
             return '';
         }
         $value = str_replace(["\r\n", "\r"], "\n", $value);
-        $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $value); // control characters
+        $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $value);
         if (empty($o['multiline'])) {
             $value = preg_replace('/[\n\t]+/', ' ', $value);
         }
@@ -371,7 +307,6 @@ class Validator {
         return $value;
     }
 
-    /** Long text (messages, replies, descriptions). */
     public function message($field, array $o = []) {
         $max = $o['max'] ?? 2000;
         return $this->text($field, $o + [
@@ -382,7 +317,6 @@ class Validator {
         ]);
     }
 
-    /** Person name: letters (any language), spaces, periods, apostrophes, hyphens. */
     public function personName($field, array $o = []) {
         return $this->text($field, $o + [
             'required'       => true,
@@ -393,7 +327,6 @@ class Validator {
         ]);
     }
 
-    /** Email address (returned lower-cased). */
     public function email($field, array $o = []) {
         $value = $this->text($field, $o + ['required' => true, 'max' => 100, 'maxMessage' => 'Email address must not exceed 100 characters.']);
         if ($value === '' || $this->hasError($field)) {
@@ -405,7 +338,6 @@ class Validator {
         return strtolower($value);
     }
 
-    /** Phone number: digits only, 7-15 digits (same rule everywhere). */
     public function phone($field, array $o = []) {
         $value = $this->text($field, $o + ['required' => true]);
         if ($value === '' || $this->hasError($field)) {
@@ -417,7 +349,6 @@ class Validator {
         return $value;
     }
 
-    /** New password: 8-72 characters with at least one letter and one number. Never trimmed. */
     public function newPassword($field) {
         $value = $this->raw($field);
         if ($value === null) {
@@ -436,7 +367,6 @@ class Validator {
         return $value;
     }
 
-    /** Password typed at login: only required (existing accounts keep working). */
     public function loginPassword($field) {
         $value = $this->raw($field);
         if ($value === null || trim($value) === '') {
@@ -446,7 +376,6 @@ class Validator {
         return $value;
     }
 
-    /** Confirmation field must equal $expected. */
     public function confirmation($field, $expected) {
         $value = $this->raw($field);
         if ($value === null || $value === '') {
@@ -457,7 +386,6 @@ class Validator {
         return $value;
     }
 
-    /** Whole number. Options: required (default true), min, max, message, minMessage, maxMessage. */
     public function int($field, array $o = []) {
         $value = $this->raw($field);
         $message = $o['message'] ?? 'Please enter a whole number.';
@@ -488,12 +416,10 @@ class Validator {
         return $int;
     }
 
-    /** Record identifier: positive whole number. */
     public function id($field) {
         return $this->int($field, ['min' => 1, 'max' => 2147483647, 'message' => MSG_INVALID_OPERATION, 'minMessage' => MSG_INVALID_OPERATION, 'maxMessage' => MSG_INVALID_OPERATION]);
     }
 
-    /** Money amount with up to 2 decimals. Options: required, min, max, minMessage, maxMessage. */
     public function money($field, array $o = []) {
         $value = $this->raw($field);
         if ($value === null) {
@@ -527,7 +453,6 @@ class Validator {
         return $amount;
     }
 
-    /** Value must be one of $allowed. Options: required (default true), message, requiredMessage. */
     public function choice($field, array $allowed, array $o = []) {
         $value = $this->raw($field);
         if ($value === null) {
@@ -549,12 +474,8 @@ class Validator {
     }
 }
 
-/* ----------------------------------------------------------------------
- * 6. File uploads (images)
- * -------------------------------------------------------------------- */
-const UPLOAD_MAX_BYTES = 5242880; // 5 MB
+const UPLOAD_MAX_BYTES = 5242880;
 
-/** MIME type => file extension for accepted image formats. */
 function allowedImageTypes($includeGif = true) {
     $types = [
         'image/jpeg'     => 'jpg',
@@ -573,7 +494,6 @@ function allowedImageTypes($includeGif = true) {
     return $types;
 }
 
-/** MIME type from the file's content (not its name). */
 function detectMimeType($path) {
     if (class_exists('finfo')) {
         $finfo = new finfo(FILEINFO_MIME_TYPE);
@@ -588,10 +508,6 @@ function detectMimeType($path) {
     return $info ? strtolower($info['mime']) : '';
 }
 
-/**
- * Validates an uploaded image WITHOUT saving it.
- * Returns ['present' => bool, 'error' => string|null, 'tmp' => path, 'ext' => ext].
- */
 function checkImageUpload($field, array $allowedTypes, $maxBytes = UPLOAD_MAX_BYTES, $required = false) {
     $acceptedList = strtoupper(implode(', ', array_unique(array_values($allowedTypes))));
     $typeError = MSG_FILE_TYPE . ' (Accepted: ' . $acceptedList . '.)';
@@ -625,7 +541,6 @@ function checkImageUpload($field, array $allowedTypes, $maxBytes = UPLOAD_MAX_BY
         $result['error'] = $typeError;
         return $result;
     }
-    // Formats PHP can read must also parse as a real image (not just a fake header)
     $parsable = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-ms-bmp', 'image/tiff'];
     if (in_array($mime, $parsable, true)) {
         $size = @getimagesize($file['tmp_name']);
@@ -633,7 +548,6 @@ function checkImageUpload($field, array $allowedTypes, $maxBytes = UPLOAD_MAX_BY
             $result['error'] = $typeError;
             return $result;
         }
-        // With the GD extension, fully decode the image to be sure it is not disguised data
         $gdTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/x-ms-bmp'];
         if (in_array($mime, $gdTypes, true) && function_exists('imagecreatefromstring') && (int)$file['size'] <= $maxBytes) {
             $image = @imagecreatefromstring((string)file_get_contents($file['tmp_name']));
@@ -650,11 +564,6 @@ function checkImageUpload($field, array $allowedTypes, $maxBytes = UPLOAD_MAX_BY
     return $result;
 }
 
-/**
- * Saves a file checked by checkImageUpload() under a random, safe file name.
- * Returns the relative path (e.g. assets/uploads/products/x.png).
- * Throws UserFacingException if it cannot be saved.
- */
 function storeCheckedUpload(array $checked, $subDir, $prefix) {
     $relativeDir = 'assets/uploads/' . $subDir . '/';
     $absoluteDir = __DIR__ . '/../' . $relativeDir;
@@ -671,7 +580,6 @@ function storeCheckedUpload(array $checked, $subDir, $prefix) {
     return $relativeDir . $filename;
 }
 
-/** Removes a file saved by storeCheckedUpload() (used when the related database save fails). */
 function deleteStoredUpload($relativePath) {
     if ($relativePath && strpos($relativePath, 'assets/uploads/') === 0 && strpos($relativePath, '..') === false) {
         $absolute = __DIR__ . '/../' . $relativePath;
@@ -681,11 +589,8 @@ function deleteStoredUpload($relativePath) {
     }
 }
 
-/* ----------------------------------------------------------------------
- * 7. Abuse limits (use the existing activity_logs / contact_messages tables)
- * -------------------------------------------------------------------- */
-const LOGIN_MAX_ATTEMPTS   = 5;   // failed attempts ...
-const LOGIN_WINDOW_MINUTES = 15;  // ... within this many minutes (per IP address)
+const LOGIN_MAX_ATTEMPTS   = 5;
+const LOGIN_WINDOW_MINUTES = 15;
 
 function clientIp() {
     return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
@@ -710,7 +615,6 @@ function msgLoginThrottled() {
     return 'Too many failed login attempts. Please wait ' . LOGIN_WINDOW_MINUTES . ' minutes and try again.';
 }
 
-/** True when this email already sent $max messages in the last 10 minutes. */
 function isMessageRateLimited($email, $max = 5) {
     try {
         $stmt = getDB()->prepare("SELECT COUNT(*) FROM contact_messages WHERE email = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)");
@@ -722,16 +626,7 @@ function isMessageRateLimited($email, $max = 5) {
     }
 }
 
-/* ----------------------------------------------------------------------
- * 8. Shared business rules
- * -------------------------------------------------------------------- */
 
-/**
- * Rules for support / contact messages (My Messages page and the Contact Us form).
- * When $accountEmail is given (logged-in customer) it is always used, so a message
- * can't be filed under someone else's email.
- * Returns [values, errors].
- */
 function validateSupportMessage(array $input, $accountEmail = null) {
     $v = new Validator($input);
     $values = [
@@ -744,16 +639,14 @@ function validateSupportMessage(array $input, $accountEmail = null) {
     return [$values, $v->errors()];
 }
 
-/** Saves a validated support message. */
 function saveSupportMessage(array $values) {
     $stmt = getDB()->prepare("INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)");
     $stmt->execute([$values['name'], $values['email'], $values['subject'], $values['message']]);
 }
 
-/** Starts a fresh session ID after login (prevents session fixation) while keeping the cart. */
 function regenerateSessionAfterLogin() {
     if (session_status() === PHP_SESSION_ACTIVE) {
         session_regenerate_id(true);
     }
-    unset($_SESSION['csrf_token']); // new token for the new session
+    unset($_SESSION['csrf_token']);
 }

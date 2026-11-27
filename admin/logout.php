@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/../config/db.php';
 
-// Log out only after the admin confirmed (POST from the confirmation dialog)
 $confirmed = $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['confirm_logout'] ?? '') === '1';
 
 if (!isAdminLoggedIn()) {
@@ -10,7 +9,6 @@ if (!isAdminLoggedIn()) {
 }
 
 if (!$confirmed) {
-    // Fallback confirmation page (e.g. logout.php opened directly or JavaScript disabled)
     $cancelUrl = 'index.php';
     $referer = $_SERVER['HTTP_REFERER'] ?? '';
     if ($referer !== '' && parse_url($referer, PHP_URL_HOST) === ($_SERVER['HTTP_HOST'] ?? '') && strpos($referer, 'logout.php') === false) {

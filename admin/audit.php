@@ -15,21 +15,31 @@ $actionsList = [
     'CUSTOMER_LOGOUT',
     'CUSTOMER_REGISTER',
     'CUSTOMER_UPDATED',
+    'DISCOUNT_CREATED',
+    'DISCOUNT_DELETED',
+    'DISCOUNT_STATUS_CHANGED',
+    'DISCOUNT_UPDATED',
     'LOGIN_FAILED',
     'MESSAGE_DELETED',
     'MESSAGE_REPLIED',
     'ORDER_DELETED',
     'ORDER_PLACED',
     'ORDER_STATUS_UPDATED',
+    'PASSWORD_CHANGED',
+    'PASSWORD_CHANGE_FAILED',
     'PRODUCT_ADDED',
     'PRODUCT_DEACTIVATED',
     'PRODUCT_DELETED',
-    'PRODUCT_UPDATED'
+    'PRODUCT_UPDATED',
+    'PROFILE_UPDATED',
+    'REVIEW_MODERATED',
+    'REVIEW_REMOVED',
+    'REVIEW_RESTORED',
+    'REVIEW_SUBMITTED'
 ];
 
 $filterNotice = '';
 
-// Only known action types are accepted as filters
 $selectedActions = $_GET['actions'] ?? [];
 if (!is_array($selectedActions)) {
     $selectedActions = [$selectedActions];
@@ -59,7 +69,6 @@ $sql = "
 $params = [];
 
 if (!empty($search)) {
-    // Treat % and _ typed by the admin as normal characters
     $like = '%' . addcslashes($search, '%_\\') . '%';
     $sql .= " AND (a.action LIKE ? OR a.description LIKE ? OR u.full_name LIKE ? OR u.email LIKE ?)";
     $params[] = $like;
@@ -85,7 +94,6 @@ $logs = $stmt->fetchAll();
 require_once __DIR__ . '/includes/header.php';
 ?>
 
-<!-- Custom White Frosted Glassmorphism Audit Logs Styles -->
 <style>
     body {
         background: linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%) !important;
@@ -94,7 +102,6 @@ require_once __DIR__ . '/includes/header.php';
         min-height: 100vh;
     }
 
-    /* White Frosted Glass Card Effect */
     .smiski-glass-card {
         background: rgba(255, 255, 255, 0.78) !important;
         backdrop-filter: blur(30px) saturate(180%);
@@ -112,13 +119,11 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
     }
 
-    /* Pure White Glow Text for Headings on Dark Background */
     .white-glow-heading {
         color: #ffffff !important;
         text-shadow: 0 0 10px rgba(255, 255, 255, 0.8), 0 0 20px rgba(134, 239, 172, 0.6), 0 2px 4px rgba(0,0,0,0.3);
     }
 
-    /* Green Glow-in-the-Dark Text Effect for White Backgrounds */
     .neon-glow-text {
         color: #064e3b !important;
         text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -129,14 +134,12 @@ require_once __DIR__ . '/includes/header.php';
         font-weight: 500;
     }
 
-    /* Pure White Subtext for Dark Background */
     .white-subtext {
         color: rgba(255, 255, 255, 0.9) !important;
         font-weight: 500;
         text-shadow: 0 1px 3px rgba(0,0,0,0.3);
     }
 
-    /* Input Controls for White Cards */
     .smiski-input {
         width: 100%;
         padding: 0.75rem 1rem 0.75rem 2.5rem;
@@ -159,7 +162,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 15px rgba(74, 222, 128, 0.4);
     }
 
-    /* Green Primary Button */
     .btn-green-glow {
         background: #15803d !important;
         color: #ffffff !important;
@@ -175,7 +177,6 @@ require_once __DIR__ . '/includes/header.php';
         box-shadow: 0 0 20px rgba(74, 222, 128, 0.8), inset 0 0 8px rgba(74, 222, 128, 0.4);
     }
 
-    /* Secondary Action Button */
     .btn-secondary-glow {
         background: rgba(255, 255, 255, 0.9) !important;
         color: #15803d !important;
@@ -193,7 +194,6 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="container" style="padding: 2rem 1rem; max-width: 1300px; margin: 0 auto;">
 
-    <!-- Page Header -->
     <div style="margin-bottom: 1.5rem;">
         <h2 class="white-glow-heading" style="font-size: 1.8rem; font-weight: 800; letter-spacing: -0.025em; margin-bottom: 0.25rem;">
             <i class="fa-solid fa-list-check" style="color: #86efac;"></i> Audit Logs
@@ -201,10 +201,8 @@ require_once __DIR__ . '/includes/header.php';
         <p class="white-subtext" style="font-size: 0.9rem;">Track and monitor all user and system activity history</p>
     </div>
 
-    <!-- Layout Container (Filter Sidebar + Main Table) -->
     <div style="display: grid; grid-template-columns: 280px 1fr; gap: 1.5rem; align-items: start;">
 
-        <!-- Filter Sidebar Card -->
         <div class="smiski-glass-card" style="padding: 1.5rem;">
             <h3 class="neon-glow-text" style="font-size: 1.1rem; font-weight: 700; margin-bottom: 1.25rem;">
                 <i class="fa-solid fa-filter" style="color: #15803d;"></i> Log Action Checklist
@@ -244,7 +242,6 @@ require_once __DIR__ . '/includes/header.php';
             </form>
         </div>
 
-        <!-- Main Logs Table Container -->
         <div class="smiski-glass-card" style="overflow: hidden;">
             <div style="padding: 1.25rem 1.5rem; border-bottom: 1px solid rgba(74, 222, 128, 0.4); background: rgba(220, 252, 231, 0.5); display: flex; justify-content: space-between; align-items: center;">
                 <h3 class="neon-glow-text" style="font-size: 1.15rem; font-weight: 700; margin: 0;">
@@ -301,7 +298,6 @@ require_once __DIR__ . '/includes/header.php';
 
 </div>
 
-<!-- Modal Dialog -->
 <div class="modal-overlay" id="logModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(5, 46, 22, 0.85); backdrop-filter: blur(10px); align-items: center; justify-content: center; z-index: 2000;">
     <div class="smiski-glass-card" style="padding: 2rem; width: 100%; max-width: 500px; position: relative; color: #1f2937;">
         <button onclick="closeLogModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>

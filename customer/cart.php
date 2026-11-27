@@ -1,18 +1,15 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isset($_SESSION['cart'])) {
     $_SESSION['cart'] = [];
 }
 
-// Load the customer's saved cart (persists across logout / re-login)
 syncCustomerCart();
 
-/* ---- Request validation ---- */
 $allowedActions = ['add', 'buy_now', 'reduce', 'remove'];
 $rawAction = $_GET['action'] ?? '';
 $action = is_string($rawAction) ? $rawAction : '';
@@ -27,11 +24,9 @@ if ($action !== '') {
     if (isAdminLoggedIn()) {
         abortRequest(403, MSG_UNAUTHORIZED . ' Shopping is disabled in Admin mode.', 'index.php');
     }
-    // Cart changes come from links / AJAX, so the CSRF token travels in the URL
     requireCsrfFromQuery('cart.php');
 }
 
-// Remove malformed entries (e.g. from an old session) so counts stay accurate
 foreach ($_SESSION['cart'] as $cartKey => $cartQty) {
     if (!is_int($cartKey) && !ctype_digit((string)$cartKey) || (int)$cartQty < 1) {
         unset($_SESSION['cart'][$cartKey]);
@@ -43,10 +38,6 @@ foreach ($_SESSION['cart'] as $cartKey => $cartQty) {
 $cartError = $_SESSION['cart_error'] ?? '';
 unset($_SESSION['cart_error']);
 
-/**
- * Checks if one more unit of a product can be added to the cart.
- * Returns [httpStatus, message]; status 200 means the item can be added.
- */
 function cartAddCheck($productId) {
     $stmt = getDB()->prepare("SELECT name, stock_quantity FROM products WHERE id = ? AND status = 'active'");
     $stmt->execute([$productId]);
@@ -94,7 +85,6 @@ if ($action === 'buy_now') {
         $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
         persistCart();
     } elseif (empty($_SESSION['cart'][$id])) {
-        // Nothing of this product in the cart and it can't be added
         $_SESSION['cart_error'] = $addError;
         header("Location: cart.php", true, 303);
         exit;
@@ -150,7 +140,6 @@ if (!empty($_SESSION['cart'])) {
     $foundIds = array_map('intval', array_column($products, 'id'));
     foreach ($productIds as $cartProductId) {
         if (!in_array((int)$cartProductId, $foundIds, true)) {
-            // Product was deleted: drop it from the cart
             unset($_SESSION['cart'][$cartProductId]);
             persistCart();
         }
@@ -161,7 +150,6 @@ if (!empty($_SESSION['cart'])) {
         $itemSubtotal = $p['price'] * $qty;
         $subtotal += $itemSubtotal;
 
-        // Stock / availability may have changed since the item was added
         $issue = '';
         if (($p['status'] ?? 'active') !== 'active') {
             $issue = 'This product is no longer available. Please remove it from your cart.';
@@ -202,7 +190,6 @@ if (file_exists('includes/header.php')) {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
-        /* Main Glass Card with Smiski Glow */
         .smiski-card {
             background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(30px) saturate(180%);
@@ -219,7 +206,6 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
         }
 
-        /* Subcards inside Details */
         .smiski-subcard {
             background: rgba(255, 255, 255, 0.55) !important;
             backdrop-filter: blur(15px);
@@ -234,7 +220,6 @@ if (file_exists('includes/header.php')) {
             font-weight: 500;
         }
 
-        /* Primary & Secondary Buttons aligned with Theme */
         .btn-green-primary {
             background: #15803d !important;
             color: #ffffff !important;
@@ -279,7 +264,6 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
         }
 
-        /* Neon Glow-in-the-Dark Text Effect for Glass White Backgrounds */
         .neon-glow-text {
             color: #064e3b !important;
             text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -290,7 +274,6 @@ if (file_exists('includes/header.php')) {
 
 <div class="container" style="max-width: 1200px; margin: 0 auto; padding-top: 1.5rem; padding-bottom: 3rem; padding-left: 1rem; padding-right: 1rem;">
 
-    <!-- Header Section -->
     <div class="smiski-card" style="padding: 2rem 2.5rem; margin-bottom: 2rem;">
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1.5rem;">
             <div>
@@ -327,7 +310,6 @@ if (file_exists('includes/header.php')) {
     <?php else: ?>
         <div style="display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start;">
 
-            <!-- Left: Cart Items Table Container -->
             <div class="smiski-card" style="flex: 2; min-width: 340px; padding: 1.75rem 2rem;">
                 <div style="overflow-x: auto;">
                     <table style="width: 100%; border-collapse: collapse; min-width: 500px;">
@@ -377,7 +359,6 @@ if (file_exists('includes/header.php')) {
                 </div>
             </div>
 
-            <!-- Right: Order Summary / Checkout Box -->
             <div class="smiski-card" style="flex: 1; min-width: 280px; padding: 1.75rem 2rem;">
                 <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; border-bottom: 1px solid rgba(74, 222, 128, 0.4); padding-bottom: 0.75rem;">Order Summary</h3>
 

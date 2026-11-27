@@ -1,11 +1,9 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
-// Logged-in users don't need to register again
 if (isset($_SESSION['user_id'])) {
     header("Location: " . (isAdminLoggedIn() ? '../admin/index.php' : 'index.php'));
     exit;
@@ -13,8 +11,8 @@ if (isset($_SESSION['user_id'])) {
 
 $error = '';
 $success = '';
-$errors = [];   // field => message
-$old = [];      // values to keep in the form (never the password)
+$errors = [];
+$old = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $v = new Validator($_POST);
@@ -43,7 +41,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ? MSG_EMAIL_TAKEN . ' Please log in instead or use a different email address.'
             : MSG_FORM_ERRORS;
     } else {
-        // I-hash ang password para secure bago i-save sa database
         $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
         try {
@@ -53,7 +50,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (PDOException $e) {
             $newUserId = false;
             if ($e->getCode() === '23000') {
-                // Same email registered at the same moment (double submit / another tab)
                 $errors['email'] = MSG_EMAIL_TAKEN;
                 $error = MSG_EMAIL_TAKEN;
                 http_response_code(409);
@@ -76,7 +72,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['user_phone'] = $phone;
                 $_SESSION['user_address'] = $address;
 
-                // Save any items added to the cart before signing up
                 unset($_SESSION['cart_synced_for']);
                 syncCustomerCart();
 
@@ -111,7 +106,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #1f2937 !important;
         }
 
-        /* White Frosted Glass Card (Matched with other pages) */
         .smiski-card {
             background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(30px) saturate(180%);
@@ -133,7 +127,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-weight: 500;
         }
 
-        /* Neon Glow Text for White Cards */
         .neon-glow-text {
             color: #064e3b !important;
             text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -168,7 +161,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 0.35rem;
         }
 
-        /* Input Controls */
         .input-control {
             width: 100%;
             padding: 0.7rem 0.9rem;
@@ -193,7 +185,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             resize: vertical;
         }
 
-        /* Hover Scale Effect */
         .hover-scale {
             transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
         }
@@ -202,7 +193,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-color: #15803d !important;
         }
 
-        /* Buttons matching the theme */
         .btn-green-primary {
             background: #15803d !important;
             color: #ffffff !important;

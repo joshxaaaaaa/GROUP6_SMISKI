@@ -13,7 +13,6 @@ if (function_exists('isCustomerLoggedIn') && !isCustomerLoggedIn()) {
     exit;
 }
 
-// Load the customer's saved cart so checkout matches what the cart shows
 syncCustomerCart();
 
 if (empty($_SESSION['cart'])) {
@@ -27,46 +26,16 @@ try {
     $db->exec("ALTER TABLE orders ADD COLUMN payment_receipt VARCHAR(255) NULL AFTER payment_method");
     $db->exec("ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) DEFAULT 'unpaid' AFTER payment_receipt");
 } catch (Exception $e) {
-    // Ignore if columns already exist
 }
 
 $shippingCost = 50.00;
 $taxRate = 12.0; 
-$loyaltyDiscountRate = 5.0;   // Loyal Customer Discount (% off product subtotal)
-$loyaltyMinPurchases = 5;     // Completed (delivered) purchases needed to qualify
 
 $settingsStmt = $db->query("SELECT setting_key, setting_value FROM system_settings");
 while ($row = $settingsStmt->fetch()) {
     if ($row['setting_key'] === 'shipping_cost') $shippingCost = floatval($row['setting_value']);
     if ($row['setting_key'] === 'tax_rate') $taxRate = floatval($row['setting_value']);
-    if ($row['setting_key'] === 'loyalty_discount_rate') $loyaltyDiscountRate = floatval($row['setting_value']);
-    if ($row['setting_key'] === 'loyalty_min_purchases') $loyaltyMinPurchases = max(1, intval($row['setting_value']));
 }
-
-/**
- * Loyalty status from the customer's purchase history.
- * Only successfully completed purchases (orders marked Delivered) count,
- * so the status is re-assessed whenever an order is delivered.
- */
-function getLoyaltyStatus(PDO $db, $customerId, $minPurchases) {
-    $stmt = $db->prepare("SELECT COUNT(*) FROM orders WHERE customer_id = ? AND status = 'delivered'");
-    $stmt->execute([$customerId]);
-    $completed = (int)$stmt->fetchColumn();
-    return [
-        'completed' => $completed,
-        'required'  => $minPurchases,
-        'remaining' => max(0, $minPurchases - $completed),
-        'eligible'  => $completed >= $minPurchases,
-    ];
-}
-
-$loyalty = getLoyaltyStatus($db, (int)($_SESSION['user_id'] ?? 0), $loyaltyMinPurchases);
-$loyaltyRateLabel = rtrim(rtrim(number_format($loyaltyDiscountRate, 2, '.', ''), '0'), '.') . '%';
-
-// Applied automatically for eligible customers; they can choose "Remove Discount".
-// Removing it only affects this order — loyalty status is based on purchase history.
-$applyLoyaltyDiscount = $loyalty['eligible']
-    && (($_SERVER['REQUEST_METHOD'] === 'POST') ? (($_POST['apply_loyalty_discount'] ?? '1') === '1') : true);
 
 $productIds = array_keys($_SESSION['cart']);
 $inClause = implode(',', array_fill(0, count($productIds), '?'));
@@ -76,14 +45,13 @@ $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $cartItems = [];
 $subtotal = 0;
-$cartProblems = [];   // availability / stock problems found in the cart
+$cartProblems = [];
 
 foreach ($products as $p) {
     $qty = (int)$_SESSION['cart'][$p['id']];
     if ($qty < 1) {
         continue;
     }
-    // Prices always come from the database, never from the browser
     $itemSubtotal = round((float)$p['price'] * $qty, 2);
     $subtotal += $itemSubtotal;
 
@@ -108,14 +76,12 @@ if (empty($cartItems)) {
     header("Location: cart.php", true, 303);
     exit;
 }
-// Stock changed since the items were added: send the customer back to fix the cart
 if ($cartProblems) {
     $_SESSION['cart_error'] = 'Please update your cart before checking out. ' . implode(' ', $cartProblems);
     header("Location: cart.php", true, 303);
     exit;
 }
 
-// The logged-in account must still exist and be active
 $accountStmt = $db->prepare("SELECT id, status FROM users WHERE id = ? AND role = 'customer'");
 $accountStmt->execute([(int)$_SESSION['user_id']]);
 $account = $accountStmt->fetch();
@@ -127,13 +93,14 @@ if (!$account || $account['status'] !== 'active') {
     exit;
 }
 
+$checkoutDiscounts = getCheckoutDiscounts((int)$account['id'], $subtotal);
+
 $error = '';
-$errors = [];   // field => message
-$old = [];      // entered values to keep when validation fails
+$errors = [];
+$old = [];
 
 $allowedPaymentMethods = ['Cash on Delivery (COD)', 'E-Wallet / GCash', 'Credit / Debit Card'];
 
-/** Luhn checksum used by all major card networks. */
 function isValidCardNumber($digits) {
     if (!preg_match('/^\d{13,19}$/', $digits)) {
         return false;
@@ -159,8 +126,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $address = $v->text('delivery_address', ['required' => true, 'min' => 5, 'max' => 500, 'multiline' => true,
         'minMessage' => 'Please enter your complete delivery address (at least 5 characters).']);
     $paymentChoice = $v->choice('payment_method', $allowedPaymentMethods, ['requiredMessage' => 'Please choose a payment method.']);
-    $discountChoice = $v->choice('apply_loyalty_discount', ['0', '1'], ['required' => false, 'message' => MSG_INVALID_OPERATION]);
-    $old = ['customer_name' => $customerName, 'phone' => $phone, 'delivery_address' => $address, 'payment_method' => $paymentChoice];
+    $rawDiscount = $_POST['discount_id'] ?? null;
+    $discountChoice = null;
+    if ($rawDiscount !== null) {
+        if (!is_string($rawDiscount) || ($rawDiscount !== 'none' && !ctype_digit($rawDiscount))) {
+            $v->addError('discount_id', MSG_INVALID_OPERATION);
+        } else {
+            $discountChoice = $rawDiscount === 'none' ? 'none' : (int)$rawDiscount;
+        }
+    }
+    $old = ['customer_name' => $customerName, 'phone' => $phone, 'delivery_address' => $address, 'payment_method' => $paymentChoice, 'discount_id' => is_string($rawDiscount) ? $rawDiscount : null];
+
+    $selectedDiscount = null;
+    if ($discountChoice === null && !$v->hasError('discount_id')) {
+        $selectedDiscount = $checkoutDiscounts['available'][0] ?? null;
+    } elseif (is_int($discountChoice)) {
+        foreach ($checkoutDiscounts['available'] as $candidate) {
+            if ((int)$candidate['id'] === $discountChoice) {
+                $selectedDiscount = $candidate;
+                break;
+            }
+        }
+        if ($selectedDiscount === null) {
+            $chosen = fetchDiscountWithStatus($discountChoice);
+            $v->addError('discount_id', $chosen ? (discountEligibilityError($chosen, $checkoutDiscounts['completed'], $subtotal) ?: MSG_DISCOUNT_UNAVAILABLE) : MSG_DISCOUNT_UNAVAILABLE);
+        }
+    }
 
     $paymentMethod = (string)$paymentChoice;
     $paymentReceipt = null;
@@ -208,7 +199,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = MSG_FORM_ERRORS;
         http_response_code(422);
     } elseif (!consumeFormToken('checkout', $_POST['form_token'] ?? '')) {
-        // Same checkout form submitted twice (double click / refresh): never create a second order
         if (!empty($_SESSION['latest_order'])) {
             header("Location: success.php", true, 303);
             exit;
@@ -219,19 +209,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (empty($errors)) {
-        // Re-check eligibility against the latest purchase history before placing the order
-        $loyalty = getLoyaltyStatus($db, (int)($_SESSION['user_id'] ?? 0), $loyaltyMinPurchases);
-        $applyLoyaltyDiscount = $loyalty['eligible'] && ($discountChoice ?? '1') === '1';
-
-        // All amounts are calculated on the server from database prices and settings
-        // Only one discount per order: the Loyal Customer Discount (no other promotions are combined)
-        $discountAmount = $applyLoyaltyDiscount ? round($subtotal * ($loyaltyDiscountRate / 100), 2) : 0;
-        $discountedSubtotal = $subtotal - $discountAmount;
-        $taxAmount = round($discountedSubtotal * ($taxRate / 100), 2);
-        $totalAmount = round($discountedSubtotal + $taxAmount + $shippingCost, 2);
+        $discountAmount = 0;
+        $discountType = 'None';
+        $discountId = null;
 
         try {
-            // Save the receipt only after every other check passed
             if ($isGcash) {
                 $paymentReceipt = storeCheckedUpload($receiptCheck, 'receipts', 'gcash');
             }
@@ -239,15 +221,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->beginTransaction();
             $customerId = (int)$account['id'];
 
-            $orderStmt = $db->prepare("
-                INSERT INTO orders (customer_id, customer_name, phone, delivery_address, payment_method, payment_receipt, payment_status, subtotal, discount_type, discount_amount, shipping_cost, tax_amount, total_amount, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-            ");
+            if ($selectedDiscount !== null) {
+                $lockedDiscount = fetchDiscountWithStatus($selectedDiscount['id'], true);
+                $discountError = $lockedDiscount ? discountEligibilityError($lockedDiscount, countCompletedOrders($customerId), $subtotal) : MSG_DISCOUNT_UNAVAILABLE;
+                if ($discountError !== '') {
+                    throw new UserFacingException($discountError . ' Please review your discount and try again.', 409);
+                }
+                $discountAmount = calculateDiscountAmount($lockedDiscount, $subtotal);
+                $discountType = discountOrderLabel($lockedDiscount);
+                $discountId = (int)$lockedDiscount['id'];
+            }
+            $discountedSubtotal = $subtotal - $discountAmount;
+            $taxAmount = round($discountedSubtotal * ($taxRate / 100), 2);
+            $totalAmount = round($discountedSubtotal + $taxAmount + $shippingCost, 2);
 
-            // discount_type column is VARCHAR(20)
-            $discountType = $applyLoyaltyDiscount ? substr('Loyal Customer (' . $loyaltyRateLabel . ')', 0, 20) : 'None';
-
-            $orderStmt->execute([
+            $orderColumns = "customer_id, customer_name, phone, delivery_address, payment_method, payment_receipt, payment_status, subtotal, discount_type, discount_amount, shipping_cost, tax_amount, total_amount, status";
+            $orderValues = [
                 $customerId,
                 $customerName,
                 $phone,
@@ -260,8 +249,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $discountAmount,
                 $shippingCost,
                 $taxAmount,
-                $totalAmount
-            ]);
+                $totalAmount,
+                'pending'
+            ];
+            if (ordersHaveDiscountColumn()) {
+                $orderColumns .= ", discount_id";
+                $orderValues[] = $discountId;
+            }
+            $orderStmt = $db->prepare("INSERT INTO orders ($orderColumns) VALUES (" . implode(', ', array_fill(0, count($orderValues), '?')) . ")");
+            $orderStmt->execute($orderValues);
 
             $orderId = $db->lastInsertId();
 
@@ -270,7 +266,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $orderNum = $noStmt->fetchColumn();
 
             $itemStmt = $db->prepare("INSERT INTO order_items (order_id, product_id, product_name, quantity, price, subtotal) VALUES (?, ?, ?, ?, ?, ?)");
-            // Stock is re-checked inside the transaction: only deduct when enough units are available
             $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ? AND status = 'active' AND stock_quantity >= ?");
             $stockLeftStmt = $db->prepare("SELECT stock_quantity FROM products WHERE id = ?");
 
@@ -287,12 +282,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->commit();
 
             if (function_exists('logActivity')) {
-                $discountNote = $applyLoyaltyDiscount ? " with Loyal Customer Discount (-₱" . number_format($discountAmount, 2) . ")" : "";
+                $discountNote = $discountId !== null ? " with " . $discountType . " (-₱" . number_format($discountAmount, 2) . ")" : "";
                 logActivity($_SESSION['user_id'], 'ORDER_PLACED', "Order $orderNum placed for total amount ₱" . number_format($totalAmount, 2) . $discountNote);
             }
 
             $_SESSION['cart'] = [];
-            persistCart(); // clear the saved cart as well
+            persistCart();
             $_SESSION['latest_order'] = [
                 'order_number' => $orderNum,
                 'total_amount' => $totalAmount,
@@ -303,7 +298,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
 
         } catch (Exception $e) {
-            // Nothing is saved when any step fails
             if ($db->inTransaction()) {
                 $db->rollBack();
             }
@@ -316,12 +310,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $selectedPayment = in_array($old['payment_method'] ?? '', $allowedPaymentMethods, true) ? $old['payment_method'] : 'Cash on Delivery (COD)';
 
-// One-time token: a double click or refresh can never place the same order twice
 $checkoutToken = generateFormToken('checkout');
 
-// Values for the initial order summary (JavaScript recalculates when the discount is removed/applied)
-$loyaltyDiscountValue = $loyalty['eligible'] ? round($subtotal * ($loyaltyDiscountRate / 100), 2) : 0;
-$previewDiscount = $applyLoyaltyDiscount ? $loyaltyDiscountValue : 0;
+$checkoutDiscounts = getCheckoutDiscounts((int)$account['id'], $subtotal);
+$availableDiscounts = $checkoutDiscounts['available'];
+$defaultDiscountId = $availableDiscounts ? (string)$availableDiscounts[0]['id'] : 'none';
+$selectedDiscountId = isset($old['discount_id']) && is_string($old['discount_id']) ? $old['discount_id'] : $defaultDiscountId;
+$previewDiscount = 0;
+$previewLabel = '';
+$previewName = '';
+$selectionFound = $selectedDiscountId === 'none';
+foreach ($availableDiscounts as $d) {
+    if ((string)$d['id'] === $selectedDiscountId) {
+        $previewDiscount = $d['amount'];
+        $previewLabel = $d['label'];
+        $previewName = $d['name'];
+        $selectionFound = true;
+    }
+}
+if (!$selectionFound) {
+    $selectedDiscountId = $defaultDiscountId;
+    if ($availableDiscounts) {
+        $previewDiscount = $availableDiscounts[0]['amount'];
+        $previewLabel = $availableDiscounts[0]['label'];
+        $previewName = $availableDiscounts[0]['name'];
+    }
+}
+$loyalDiscountAvailable = false;
+foreach ($availableDiscounts as $d) {
+    if ((int)$d['min_completed_orders'] > 0) {
+        $loyalDiscountAvailable = true;
+    }
+}
 $previewTax = ($subtotal - $previewDiscount) * ($taxRate / 100);
 $previewTotal = ($subtotal - $previewDiscount) + $previewTax + $shippingCost;
 
@@ -343,7 +363,6 @@ if (file_exists('includes/header.php')) {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
-        /* Main Glass Card with Smiski Glow (Matched with cart.php) */
         .smiski-card {
             background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(30px) saturate(180%);
@@ -360,7 +379,6 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
         }
 
-        /* Subcards inside Details (Matched with cart.php) */
         .smiski-subcard {
             background: rgba(255, 255, 255, 0.55) !important;
             backdrop-filter: blur(15px);
@@ -381,7 +399,6 @@ if (file_exists('includes/header.php')) {
             font-weight: 500;
         }
 
-        /* Primary & Secondary Buttons aligned with Theme */
         .btn-green-primary {
             background: #15803d !important;
             color: #ffffff !important;
@@ -426,13 +443,11 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
         }
 
-        /* Neon Glow-in-the-Dark Text Effect for Glass White Backgrounds */
         .neon-glow-text {
             color: #064e3b !important;
             text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
         }
 
-        /* Form Inputs */
         .smiski-input {
             width: 100%;
             padding: 0.75rem 1rem;
@@ -456,7 +471,6 @@ if (file_exists('includes/header.php')) {
 
 <div class="container" style="max-width: 1200px; margin: 0 auto; padding-top: 1.5rem; padding-bottom: 3rem; padding-left: 1rem; padding-right: 1rem;">
 
-    <!-- Header Section -->
     <div class="smiski-card" style="padding: 2rem 2.5rem; margin-bottom: 2rem;">
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1.5rem;">
             <div>
@@ -486,10 +500,8 @@ if (file_exists('includes/header.php')) {
         <input type="hidden" name="form_token" value="<?= htmlspecialchars($checkoutToken) ?>">
         <div style="display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start;">
 
-            <!-- Left Column: Details & Products -->
             <div style="flex: 2; min-width: 320px; display: flex; flex-direction: column; gap: 1.75rem;">
 
-                <!-- Customer Details -->
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
                     <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; display: flex; align-items: center; gap: 0.6rem; border-bottom: 1px solid rgba(74, 222, 128, 0.3); padding-bottom: 0.75rem;">
                         <i class="fa-solid fa-user-gear" style="color: #15803d;"></i> Customer & Delivery Details
@@ -515,7 +527,6 @@ if (file_exists('includes/header.php')) {
                     </div>
                 </div>
 
-                <!-- Payment Method -->
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
                     <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; display: flex; align-items: center; gap: 0.6rem; border-bottom: 1px solid rgba(74, 222, 128, 0.3); padding-bottom: 0.75rem;">
                         <i class="fa-solid fa-wallet" style="color: #15803d;"></i> Payment Method
@@ -549,7 +560,6 @@ if (file_exists('includes/header.php')) {
 
                     <?= fieldError($errors, 'payment_method') ?>
 
-                    <!-- GCash Upload Section -->
                     <div id="gcashUploadSection" class="smiski-subcard" style="display: none; padding: 1.25rem; margin-top: 1.25rem; background: rgba(240, 253, 244, 0.85) !important;">
                         <div class="neon-glow-text" style="font-weight: 700; font-size: 0.95rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
                             <i class="fa-solid fa-mobile-screen-button" style="color: #15803d;"></i> GCash Payment Info & Receipt Upload
@@ -565,7 +575,6 @@ if (file_exists('includes/header.php')) {
                         <small class="field-hint">Accepted: JPG, PNG, WebP, HEIC, AVIF, BMP, TIFF. Maximum 5 MB.</small>
                     </div>
 
-                    <!-- Card Payment Section -->
                     <div id="cardPaymentSection" class="smiski-subcard" style="display: none; padding: 1.25rem; margin-top: 1.25rem; background: rgba(240, 253, 244, 0.85) !important;">
                         <div style="font-weight: 700; color: #064e3b; font-size: 0.95rem; margin-bottom: 0.85rem; display: flex; align-items: center; justify-content: space-between;">
                             <span><i class="fa-solid fa-credit-card" style="color: #15803d;"></i> Card Details</span>
@@ -603,7 +612,6 @@ if (file_exists('includes/header.php')) {
                     </div>
                 </div>
 
-                <!-- Products Ordered -->
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
                     <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; display: flex; align-items: center; gap: 0.6rem; border-bottom: 1px solid rgba(74, 222, 128, 0.3); padding-bottom: 0.75rem;">
                         <i class="fa-solid fa-boxes-packing" style="color: #15803d;"></i> Products Ordered
@@ -635,73 +643,93 @@ if (file_exists('includes/header.php')) {
 
             </div>
 
-            <!-- Right Column: Summary & Checkout Actions -->
             <div style="flex: 1; min-width: 280px; display: flex; flex-direction: column; gap: 1.75rem; height: fit-content;">
 
-                <!-- Loyal Customer Discount -->
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
                     <h4 class="neon-glow-text" style="font-size: 1.1rem; font-weight: 700; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
-                        <i class="fa-solid fa-award" style="color: #15803d;"></i> Loyal Customer Discount
+                        <i class="fa-solid fa-tags" style="color: #15803d;"></i> Discounts
                     </h4>
 
-                    <?php if ($loyalty['eligible']): ?>
-                        <input type="hidden" name="apply_loyalty_discount" id="applyLoyaltyInput" value="<?= $applyLoyaltyDiscount ? '1' : '0' ?>">
-
+                    <?php if ($loyalDiscountAvailable): ?>
                         <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.85rem; flex-wrap: wrap;">
                             <span style="background: rgba(220, 252, 231, 0.95); color: #15803d; border: 1px solid rgba(74, 222, 128, 0.7); font-size: 0.8rem; font-weight: 700; padding: 0.3rem 0.75rem; border-radius: 999px; display: inline-flex; align-items: center; gap: 0.35rem;">
                                 <i class="fa-solid fa-circle-check"></i> Eligible - Loyal Customer
                             </span>
-                            <span class="text-muted-green" style="font-size: 0.8rem;"><?= $loyalty['completed'] ?> completed purchase<?= $loyalty['completed'] === 1 ? '' : 's' ?></span>
+                            <span class="text-muted-green" style="font-size: 0.8rem;"><?= (int)$checkoutDiscounts['completed'] ?> completed purchase<?= (int)$checkoutDiscounts['completed'] === 1 ? '' : 's' ?></span>
                         </div>
+                    <?php endif; ?>
 
-                        <!-- Shown while the discount is applied -->
-                        <div id="loyaltyAppliedBox" class="smiski-subcard" style="padding: 0.9rem 1rem; margin-bottom: 0.85rem; background: rgba(240, 253, 244, 0.9) !important; <?= $applyLoyaltyDiscount ? '' : 'display: none;' ?>">
+                    <?php if (!empty($availableDiscounts)): ?>
+                        <div id="discountOptions" role="radiogroup" aria-label="Choose a discount" style="display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.85rem;">
+                            <?php foreach ($availableDiscounts as $d): ?>
+                                <label class="smiski-subcard" style="display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.85rem 1rem; cursor: pointer;">
+                                    <input type="radio" name="discount_id" value="<?= (int)$d['id'] ?>" data-amount="<?= htmlspecialchars(number_format($d['amount'], 2, '.', '')) ?>" data-label="<?= htmlspecialchars($d['label']) ?>" data-name="<?= htmlspecialchars($d['name']) ?>" <?= $selectedDiscountId === (string)$d['id'] ? 'checked' : '' ?> style="accent-color: #15803d; width: 18px; height: 18px; margin-top: 0.15rem; flex-shrink: 0;">
+                                    <span style="display: block;">
+                                        <span style="display: block; font-weight: 700; color: #064e3b; font-size: 0.92rem;"><?= htmlspecialchars($d['name']) ?> <span style="font-size: 0.75rem; font-weight: 700; color: #15803d; background: rgba(220, 252, 231, 0.95); border: 1px solid rgba(74, 222, 128, 0.6); padding: 0.1rem 0.5rem; border-radius: 999px;"><?= htmlspecialchars($d['value_label']) ?></span></span>
+                                        <?php if (!empty($d['description'])): ?>
+                                            <span class="text-muted-green" style="display: block; font-size: 0.8rem; line-height: 1.4; margin-top: 0.2rem;"><?= htmlspecialchars($d['description']) ?></span>
+                                        <?php endif; ?>
+                                        <span style="display: block; font-size: 0.82rem; font-weight: 700; color: #15803d; margin-top: 0.25rem;">You save ₱<?= number_format($d['amount'], 2) ?></span>
+                                    </span>
+                                </label>
+                            <?php endforeach; ?>
+                            <label class="smiski-subcard" style="display: flex; gap: 0.75rem; align-items: center; padding: 0.85rem 1rem; cursor: pointer;">
+                                <input type="radio" name="discount_id" value="none" data-amount="0" data-label="" data-name="" <?= $selectedDiscountId === 'none' ? 'checked' : '' ?> style="accent-color: #15803d; width: 18px; height: 18px; flex-shrink: 0;">
+                                <span style="font-weight: 700; color: #064e3b; font-size: 0.9rem;">Don't use a discount</span>
+                            </label>
+                        </div>
+                        <?= fieldError($errors, 'discount_id') ?>
+
+                        <div id="discountAppliedBox" class="smiski-subcard" style="padding: 0.9rem 1rem; margin-bottom: 0.85rem; background: rgba(240, 253, 244, 0.9) !important; <?= $previewDiscount > 0 ? '' : 'display: none;' ?>">
                             <div style="font-weight: 700; color: #064e3b; font-size: 0.9rem; margin-bottom: 0.25rem;">
-                                <i class="fa-solid fa-tag" style="color: #15803d;"></i> Loyal Customer Discount applied!
+                                <i class="fa-solid fa-tag" style="color: #15803d;"></i> <span id="discountAppliedName"><?= htmlspecialchars($previewName) ?></span> applied!
                             </div>
                             <div class="text-muted-green" style="font-size: 0.82rem; line-height: 1.5;">
-                                <?= $loyaltyRateLabel ?> off your ₱<?= number_format($subtotal, 2) ?> subtotal: <strong style="color: #15803d;">-₱<?= number_format($loyaltyDiscountValue, 2) ?></strong>. You save <strong style="color: #15803d;">₱<?= number_format($loyaltyDiscountValue, 2) ?></strong> on this order.
+                                <strong style="color: #15803d;">-₱<span id="discountAppliedAmount"><?= number_format($previewDiscount, 2) ?></span></strong> off your ₱<?= number_format($subtotal, 2) ?> subtotal. You save <strong style="color: #15803d;">₱<span id="discountAppliedSavings"><?= number_format($previewDiscount, 2) ?></span></strong> on this order.
                             </div>
                         </div>
-
-                        <!-- Shown after the customer removes the discount -->
-                        <div id="loyaltyRemovedBox" class="smiski-subcard" style="padding: 0.9rem 1rem; margin-bottom: 0.85rem; <?= $applyLoyaltyDiscount ? 'display: none;' : '' ?>">
+                        <div id="discountRemovedBox" class="smiski-subcard" style="padding: 0.9rem 1rem; margin-bottom: 0.85rem; <?= $previewDiscount > 0 ? 'display: none;' : '' ?>">
                             <div style="font-weight: 700; color: #92400e; font-size: 0.9rem; margin-bottom: 0.25rem;">
                                 <i class="fa-solid fa-circle-info"></i> Discount not applied to this order
                             </div>
                             <div class="text-muted-green" style="font-size: 0.82rem; line-height: 1.5;">
-                                You are still a Loyal Customer. You can re-apply it now or use it on future orders.
+                                Your eligibility is not affected. You can choose a discount above or use it on future orders.
                             </div>
                         </div>
 
-                        <button type="button" id="removeLoyaltyBtn" class="btn-green-secondary" onclick="setLoyaltyDiscount(false)" style="width: 100%; justify-content: center; padding: 0.6rem; <?= $applyLoyaltyDiscount ? '' : 'display: none;' ?>">
-                            <i class="fa-solid fa-xmark"></i> Remove Discount
-                        </button>
-                        <button type="button" id="applyLoyaltyBtn" class="btn-green-primary" onclick="setLoyaltyDiscount(true)" style="width: 100%; justify-content: center; padding: 0.6rem; <?= $applyLoyaltyDiscount ? 'display: none;' : '' ?>">
-                            <i class="fa-solid fa-tag"></i> Apply <?= $loyaltyRateLabel ?> Discount
-                        </button>
-
-                        <p class="text-muted-green" style="font-size: 0.75rem; margin-top: 0.75rem; line-height: 1.4;">
-                            Applied automatically, once per order. Cannot be combined with other promotional discounts.
+                        <p class="text-muted-green" style="font-size: 0.75rem; line-height: 1.4;">
+                            The best available discount is applied automatically. Only one discount can be used per order.
                         </p>
                     <?php else: ?>
-                        <div style="margin-bottom: 0.85rem;">
-                            <span style="background: rgba(254, 243, 199, 0.95); color: #92400e; border: 1px solid rgba(251, 191, 36, 0.6); font-size: 0.8rem; font-weight: 700; padding: 0.3rem 0.75rem; border-radius: 999px; display: inline-flex; align-items: center; gap: 0.35rem;">
-                                <i class="fa-solid fa-hourglass-half"></i> Not yet eligible
-                            </span>
-                        </div>
-                        <p class="text-muted-green" style="font-size: 0.85rem; margin-bottom: 0.75rem; line-height: 1.5;">
-                            You have <strong style="color: #064e3b;"><?= $loyalty['completed'] ?> of <?= $loyalty['required'] ?></strong> completed purchases.
-                            Complete <strong style="color: #064e3b;"><?= $loyalty['remaining'] ?> more</strong> to unlock <?= $loyaltyRateLabel ?> off every order.
-                        </p>
-                        <div style="height: 8px; background: rgba(74, 222, 128, 0.2); border-radius: 999px; overflow: hidden; margin-bottom: 0.6rem;">
-                            <div style="height: 100%; width: <?= min(100, round($loyalty['completed'] / max(1, $loyalty['required']) * 100)) ?>%; background: #15803d; border-radius: 999px;"></div>
-                        </div>
-                        <p class="text-muted-green" style="font-size: 0.75rem; line-height: 1.4;">A purchase counts once the order has been delivered.</p>
+                        <p class="text-muted-green" style="font-size: 0.85rem; margin-bottom: 0.75rem; line-height: 1.5;">No discounts are available for this order.</p>
+                        <?= fieldError($errors, 'discount_id') ?>
                     <?php endif; ?>
+
+                    <?php foreach ($checkoutDiscounts['locked'] as $locked): ?>
+                        <div style="border-top: 1px dashed rgba(74, 222, 128, 0.4); padding-top: 0.85rem; margin-top: 0.85rem;">
+                            <div style="margin-bottom: 0.6rem;">
+                                <span style="background: rgba(254, 243, 199, 0.95); color: #92400e; border: 1px solid rgba(251, 191, 36, 0.6); font-size: 0.8rem; font-weight: 700; padding: 0.3rem 0.75rem; border-radius: 999px; display: inline-flex; align-items: center; gap: 0.35rem;">
+                                    <i class="fa-solid fa-hourglass-half"></i> Not yet eligible
+                                </span>
+                            </div>
+                            <?php if (isset($locked['remaining_orders'])): ?>
+                                <p class="text-muted-green" style="font-size: 0.85rem; margin-bottom: 0.6rem; line-height: 1.5;">
+                                    You have <strong style="color: #064e3b;"><?= (int)$checkoutDiscounts['completed'] ?> of <?= (int)$locked['min_completed_orders'] ?></strong> completed purchases.
+                                    Complete <strong style="color: #064e3b;"><?= (int)$locked['remaining_orders'] ?> more</strong> to unlock <?= htmlspecialchars($locked['name']) ?> (<?= htmlspecialchars($locked['value_label']) ?>).
+                                </p>
+                                <div style="height: 8px; background: rgba(74, 222, 128, 0.2); border-radius: 999px; overflow: hidden; margin-bottom: 0.5rem;">
+                                    <div style="height: 100%; width: <?= min(100, round($checkoutDiscounts['completed'] / max(1, (int)$locked['min_completed_orders']) * 100)) ?>%; background: #15803d; border-radius: 999px;"></div>
+                                </div>
+                                <p class="text-muted-green" style="font-size: 0.75rem; line-height: 1.4;">A purchase counts once the order has been delivered.</p>
+                            <?php else: ?>
+                                <p class="text-muted-green" style="font-size: 0.85rem; line-height: 1.5;">
+                                    Spend <strong style="color: #064e3b;">₱<?= number_format($locked['remaining_amount'], 2) ?> more</strong> to unlock <?= htmlspecialchars($locked['name']) ?> (<?= htmlspecialchars($locked['value_label']) ?>).
+                                </p>
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
 
-                <!-- Payment Summary Box -->
                 <div class="smiski-card" style="padding: 1.75rem 2rem;">
                     <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; border-bottom: 1px solid rgba(74, 222, 128, 0.4); padding-bottom: 0.75rem;">Payment Summary</h3>
 
@@ -712,7 +740,7 @@ if (file_exists('includes/header.php')) {
                         </div>
 
                         <div id="discountRow" style="display: <?= $previewDiscount > 0 ? 'flex' : 'none' ?>; justify-content: space-between; color: #dc2626;">
-                            <span>Loyal Customer Discount (<?= $loyaltyRateLabel ?>)</span>
+                            <span id="discountLabel"><?= htmlspecialchars($previewLabel) ?></span>
                             <span style="font-weight: 600;">-₱<span id="displayDiscount"><?= number_format($previewDiscount, 2) ?></span></span>
                         </div>
 
@@ -757,23 +785,20 @@ if (file_exists('includes/header.php')) {
 const baseSubtotal = <?= json_encode($subtotal) ?>;
 const shippingCost = <?= json_encode($shippingCost) ?>;
 const taxRate = <?= json_encode($taxRate) ?>;
-const loyaltyDiscountRate = <?= json_encode($loyaltyDiscountRate) ?>;
-const isLoyalCustomer = <?= json_encode($loyalty['eligible']) ?>;
 
 function formatPeso(value) {
     return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function isLoyaltyApplied() {
-    const input = document.getElementById('applyLoyaltyInput');
-    return isLoyalCustomer && input !== null && input.value === '1';
+function selectedDiscount() {
+    const radio = document.querySelector('input[name="discount_id"]:checked');
+    if (!radio) return { amount: 0, label: '', name: '' };
+    return { amount: parseFloat(radio.dataset.amount) || 0, label: radio.dataset.label || '', name: radio.dataset.name || '' };
 }
 
 function calculateTotal() {
-    let discount = 0;
-    if (isLoyaltyApplied()) {
-        discount = Math.round(baseSubtotal * (loyaltyDiscountRate / 100) * 100) / 100;
-    }
+    const selected = selectedDiscount();
+    const discount = Math.min(selected.amount, baseSubtotal);
     const discountedSub = baseSubtotal - discount;
     const tax = discountedSub * (taxRate / 100);
     const grandTotal = discountedSub + tax + shippingCost;
@@ -782,21 +807,24 @@ function calculateTotal() {
     document.getElementById('displayTax').innerText = formatPeso(tax);
     document.getElementById('displayGrandTotal').innerText = formatPeso(grandTotal);
     document.getElementById('displaySavings').innerText = formatPeso(discount);
+    document.getElementById('discountLabel').innerText = selected.label;
     document.getElementById('discountRow').style.display = discount > 0 ? 'flex' : 'none';
     document.getElementById('savingsNote').style.display = discount > 0 ? 'block' : 'none';
+
+    const applied = document.getElementById('discountAppliedBox');
+    const removed = document.getElementById('discountRemovedBox');
+    if (applied && removed) {
+        applied.style.display = discount > 0 ? 'block' : 'none';
+        removed.style.display = discount > 0 ? 'none' : 'block';
+        document.getElementById('discountAppliedName').innerText = selected.name;
+        document.getElementById('discountAppliedAmount').innerText = formatPeso(discount);
+        document.getElementById('discountAppliedSavings').innerText = formatPeso(discount);
+    }
 }
 
-// Apply / remove the Loyal Customer Discount for this order only (loyalty status is unaffected)
-function setLoyaltyDiscount(apply) {
-    const input = document.getElementById('applyLoyaltyInput');
-    if (!isLoyalCustomer || !input) return;
-    input.value = apply ? '1' : '0';
-    document.getElementById('loyaltyAppliedBox').style.display = apply ? 'block' : 'none';
-    document.getElementById('loyaltyRemovedBox').style.display = apply ? 'none' : 'block';
-    document.getElementById('removeLoyaltyBtn').style.display = apply ? 'flex' : 'none';
-    document.getElementById('applyLoyaltyBtn').style.display = apply ? 'none' : 'flex';
-    calculateTotal();
-}
+document.querySelectorAll('input[name="discount_id"]').forEach(radio => {
+    radio.addEventListener('change', calculateTotal);
+});
 
 function togglePaymentSections() {
     const paymentRadios = document.querySelectorAll('input[name="payment_method"]');
@@ -820,7 +848,6 @@ function togglePaymentSections() {
                 gcashSection.style.display = 'none';
                 cardSection.style.display = 'none';
             }
-            // Receipt / card fields are only required for the payment method that uses them
             gcashSection.querySelectorAll('[data-required-when-shown]').forEach(el => { el.required = gcashSection.style.display === 'block'; });
             cardSection.querySelectorAll('[data-required-when-shown]').forEach(el => { el.required = cardSection.style.display === 'block'; });
         } else {

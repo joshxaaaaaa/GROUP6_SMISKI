@@ -1,18 +1,14 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
+ini_set('display_errors', 0);
 
-// Session is started securely in config/db.php
-// Ensure the path to db.php is correct
 require_once '../config/db.php';
 
 $db = getDB();
 
-// Check if user is logged in
 $isLoggedIn = !empty($_SESSION['user_id']) || !empty($_SESSION['user_email']);
 $userEmail = $_SESSION['user_email'] ?? '';
 
-// Flash messages set before a redirect (Post/Redirect/Get)
 $messageSuccess = $_SESSION['support_flash_success'] ?? '';
 $messageError = $_SESSION['support_flash_error'] ?? '';
 unset($_SESSION['support_flash_success'], $_SESSION['support_flash_error']);
@@ -20,7 +16,7 @@ $formSubject = '';
 $formMessage = '';
 $reopenForm = false;
 
-$msgErrors = [];   // field => message
+$msgErrors = [];
 $msgOld = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'send_message') {
@@ -31,7 +27,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         abortRequest(403, MSG_UNAUTHORIZED . ' Support inquiries can only be sent from customer accounts.', 'messages.php');
     }
 
-    // The ticket is always filed under the logged-in account's email
     [$values, $msgErrors] = validateSupportMessage($_POST, $userEmail);
     $msgOld = $values;
     $formSubject = $values['subject'];
@@ -46,7 +41,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $reopenForm = true;
         http_response_code(429);
     } elseif (!consumeFormToken('support_message', $_POST['form_token'] ?? '')) {
-        // The same form was submitted again (page refresh / double click): do not create another ticket
         $_SESSION['support_flash_error'] = MSG_DUPLICATE . ' Your ticket is listed below.';
         header("Location: messages.php", true, 303);
         exit;
@@ -54,7 +48,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         try {
             saveSupportMessage($values);
             $_SESSION['support_flash_success'] = 'Your message has been sent successfully! Our support team will reply here.';
-            // Redirect so refreshing the page does not resubmit the form
             header("Location: messages.php", true, 303);
             exit;
         } catch (Exception $e) {
@@ -95,7 +88,6 @@ if (file_exists('includes/header.php')) {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
-        /* iOS Frosted Glass White Card Effect */
         .smiski-card {
             background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(30px) saturate(180%);
@@ -112,7 +104,6 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4), 0 0 30px rgba(134, 239, 172, 0.5), inset 0 0 15px rgba(134, 239, 172, 0.3) !important;
         }
 
-        /* Subcards inside Details */
         .smiski-subcard {
             background: rgba(255, 255, 255, 0.55) !important;
             backdrop-filter: blur(15px);
@@ -127,7 +118,6 @@ if (file_exists('includes/header.php')) {
             font-weight: 500;
         }
 
-        /* Primary & Secondary Buttons aligned with Theme */
         .btn-green-primary {
             background: #15803d !important;
             color: #ffffff !important;
@@ -172,7 +162,6 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
         }
 
-        /* Hover Scale Effect */
         .hover-scale {
             transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
         }
@@ -182,7 +171,6 @@ if (file_exists('includes/header.php')) {
             box-shadow: 0 10px 25px rgba(0,0,0,0.1), 0 0 15px rgba(74, 222, 128, 0.4);
         }
 
-        /* Green Glow-in-the-Dark Text Effect for Glass White Backgrounds */
         .neon-glow-text {
             color: #064e3b !important;
             text-shadow: 0 0 8px rgba(74, 222, 128, 0.8), 0 0 15px rgba(74, 222, 128, 0.5), 0 0 25px rgba(34, 197, 94, 0.3);
@@ -193,7 +181,6 @@ if (file_exists('includes/header.php')) {
 
 <div class="container" style="max-width: 1100px; margin: 0 auto; padding-top: 1.5rem; padding-bottom: 3rem; padding-left: 1rem; padding-right: 1rem;">
     
-    <!-- Top Header Card -->
     <div class="smiski-card" style="padding: 2rem 2.5rem; margin-bottom: 2rem;">
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1.5rem;">
             <div>
@@ -217,7 +204,6 @@ if (file_exists('includes/header.php')) {
         </div>
     </div>
 
-    <!-- Success / Error Alerts -->
     <?php if ($messageSuccess): ?>
         <div class="smiski-card" style="background: rgba(220, 252, 231, 0.95) !important; border: 1px solid rgba(74, 222, 128, 0.8); color: #166534; padding: 1.25rem 1.5rem; border-radius: 16px; margin-bottom: 2rem; font-weight: 600; display: flex; align-items: center; gap: 0.75rem;">
             <i class="fa-solid fa-circle-check" style="font-size: 1.4rem; color: #15803d;"></i>
@@ -232,7 +218,6 @@ if (file_exists('includes/header.php')) {
         </div>
     <?php endif; ?>
 
-    <!-- Main Content Sections -->
     <?php if (!$isLoggedIn): ?>
         <div class="smiski-card" style="padding: 4rem 2rem; text-align: center;">
             <i class="fa-solid fa-lock" style="font-size: 4rem; color: #166534; opacity: 0.8; margin-bottom: 1.25rem; filter: drop-shadow(0 0 10px rgba(74,222,128,0.5));"></i>
@@ -303,7 +288,6 @@ if (file_exists('includes/header.php')) {
     <?php endif; ?>
 </div>
 
-<!-- Modal Popup for New Inquiry -->
 <?php if ($isLoggedIn): ?>
 <div id="contactPane" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.65); backdrop-filter: blur(8px); z-index: 1000; align-items: center; justify-content: center; padding: 1rem;">
     <div class="smiski-card" style="width: 100%; max-width: 540px; padding: 2.5rem; position: relative;">
