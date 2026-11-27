@@ -1,21 +1,22 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
+    if (isset($_GET['ajax_details']) || isAjaxRequest()) {
+        jsonResponse(401, ['success' => false, 'message' => 'Your session has expired. Please log in again.']);
+    }
     header("Location: login.php");
     exit;
 }
 
 $db = getDB();
-$message = '';
-$error = '';
+// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
+$message = getFlash('success');
+$error = getFlash('error');
 
 $validOrderStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
 // Final statuses: once reached, the order status can no longer be changed
@@ -54,21 +55,84 @@ try {
     
 }
 
+// AJAX: order details for the "Details" dialog (returns an HTML fragment; errors return JSON)
+if (isset($_GET['ajax_details'])) {
+    $rawOrderId = $_GET['ajax_details'];
+    if (!is_string($rawOrderId) || !ctype_digit($rawOrderId) || (int)$rawOrderId < 1) {
+        jsonResponse(400, ['success' => false, 'message' => MSG_INVALID_OPERATION]);
+    }
+    $orderId = (int)$rawOrderId;
+    $oStmt = $db->prepare("SELECT * FROM orders WHERE id = ?");
+    $oStmt->execute([$orderId]);
+    $order = $oStmt->fetch();
+    if (!$order) {
+        jsonResponse(404, ['success' => false, 'message' => 'This order no longer exists.']);
+    }
+    header('Content-Type: text/html; charset=UTF-8');
+
+    if ($order) {
+        $iStmt = $db->prepare("SELECT * FROM order_items WHERE order_id = ?");
+        $iStmt->execute([$orderId]);
+        $items = $iStmt->fetchAll();
+
+        echo "<div style='display:flex; flex-direction:column; gap:0.5rem; margin-bottom:1rem; color: #1f2937;'>";
+        echo "<div><strong style='color:#064e3b;'>Order #:</strong> " . htmlspecialchars($order['order_number']) . "</div>";
+        echo "<div><strong style='color:#064e3b;'>Customer Name:</strong> " . htmlspecialchars($order['customer_name']) . "</div>";
+        echo "<div><strong style='color:#064e3b;'>Phone:</strong> " . htmlspecialchars($order['phone']) . "</div>";
+        echo "<div><strong style='color:#064e3b;'>Delivery Address:</strong> " . htmlspecialchars($order['delivery_address']) . "</div>";
+        echo "<div><strong style='color:#064e3b;'>Payment Method:</strong> " . htmlspecialchars($order['payment_method']) . " (" . ucfirst($order['payment_status'] ?? 'unpaid') . ")</div>";
+        if (!empty($order['payment_receipt'])) {
+            echo "<div><strong style='color:#064e3b;'>GCash Receipt:</strong> <a href='../" . htmlspecialchars($order['payment_receipt']) . "' target='_blank' style='color:#15803d; font-weight:600;'>View Full Image</a></div>";
+        }
+        echo "<div><strong style='color:#064e3b;'>Discount:</strong> " . htmlspecialchars($order['discount_type'] ?? 'None') . " (-₱" . number_format($order['discount_amount'], 2) . ")</div>";
+        echo "<div><strong style='color:#064e3b;'>Shipping Fee:</strong> ₱" . number_format($order['shipping_cost'], 2) . "</div>";
+        echo "<div><strong style='color:#064e3b;'>Tax Amount:</strong> ₱" . number_format($order['tax_amount'], 2) . "</div>";
+        echo "<div style='font-size:1.1rem; font-weight:700; color:#15803d; margin-top:0.3rem;'><strong>Grand Total:</strong> ₱" . number_format($order['total_amount'], 2) . "</div>";
+        echo "</div>";
+
+        echo "<h4 style='font-weight:700; margin-bottom:0.5rem; color:#064e3b;'>Ordered Items:</h4>";
+        echo "<table class='custom-table'>";
+        echo "<thead><tr><th style='padding:0.4rem;'>Item</th><th style='padding:0.4rem; text-align:center;'>Qty</th><th style='padding:0.4rem; text-align:right;'>Price</th><th style='padding:0.4rem; text-align:right;'>Subtotal</th></tr></thead><tbody>";
+        foreach ($items as $it) {
+            echo "<tr>";
+            echo "<td style='padding:0.4rem; color: #1f2937;'>" . htmlspecialchars($it['product_name']) . "</td>";
+            echo "<td style='padding:0.4rem; text-align:center;'>" . (int)$it['quantity'] . "</td>";
+            echo "<td style='padding:0.4rem; text-align:right;'>₱" . number_format($it['price'], 2) . "</td>";
+            echo "<td style='padding:0.4rem; text-align:right; font-weight:700; color:#15803d;'>₱" . number_format($it['subtotal'], 2) . "</td>";
+            echo "</tr>";
+        }
+        echo "</tbody></table>";
+    }
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
+    $v = new Validator($_POST);
+    $action = $v->choice('action', ['approve_payment', 'reject_payment', 'update_status', 'delete'], ['message' => MSG_INVALID_OPERATION]);
+    $id = $v->id('id');
+    if ($action === null || $id === null) {
+        abortRequest(400, MSG_INVALID_OPERATION, 'orders.php');
+    }
 
     if ($action === 'approve_payment') {
-        $id = intval($_POST['id'] ?? 0);
         if ($id > 0) {
             try {
                 $db->beginTransaction();
-                $cur = $db->prepare("SELECT status FROM orders WHERE id = ? FOR UPDATE");
+                $cur = $db->prepare("SELECT status, payment_method, payment_status FROM orders WHERE id = ? FOR UPDATE");
                 $cur->execute([$id]);
-                $prevStatus = $cur->fetchColumn();
+                $orderRow = $cur->fetch();
+                $prevStatus = $orderRow ? $orderRow['status'] : false;
+                $isWalletPayment = $orderRow && preg_match('/gcash|wallet/i', (string)$orderRow['payment_method']);
 
                 if ($prevStatus === false) {
                     $db->rollBack();
-                    $error = 'Order not found.';
+                    $error = 'This order no longer exists.';
+                } elseif (!$isWalletPayment) {
+                    $db->rollBack();
+                    $error = MSG_INVALID_OPERATION . ' Only GCash / e-wallet payments need manual approval.';
+                } elseif (($orderRow['payment_status'] ?? '') === 'paid') {
+                    $db->rollBack();
+                    $error = 'This payment has already been approved.';
                 } elseif (in_array($prevStatus, $lockedOrderStatuses, true)) {
                     $db->rollBack();
                     $error = 'Payment cannot be approved because this order is already ' . ucfirst($prevStatus) . '.';
@@ -83,13 +147,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
-                $error = 'Failed to approve payment: ' . $e->getMessage();
+                $error = 'Payment not approved. ' . safeErrorMessage($e, 'Payment approval failed');
             }
         }
     }
 
     if ($action === 'reject_payment') {
-        $id = intval($_POST['id'] ?? 0);
         if ($id > 0) {
             try {
                 $db->beginTransaction();
@@ -99,7 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($prevStatus === false) {
                     $db->rollBack();
-                    $error = 'Order not found.';
+                    $error = 'This order no longer exists.';
                 } elseif ($prevStatus === 'delivered') {
                     $db->rollBack();
                     $error = 'Payment cannot be rejected because this order has already been Delivered.';
@@ -115,14 +178,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
-                $error = 'Failed to reject payment: ' . $e->getMessage();
+                $error = 'Payment not rejected. ' . safeErrorMessage($e, 'Payment rejection failed');
             }
         }
     }
 
     if ($action === 'update_status') {
-        $id = intval($_POST['id'] ?? 0);
-        $status = strtolower(trim($_POST['status'] ?? ''));
+        $status = is_string($_POST['status'] ?? null) ? strtolower(trim($_POST['status'])) : '';
 
         if ($id > 0) {
             try {
@@ -133,7 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $prevStatus = $cur->fetchColumn();
 
                 $changeError = ($prevStatus === false)
-                    ? 'Order not found.'
+                    ? 'This order no longer exists.'
                     : orderStatusChangeError($prevStatus, $status, $validOrderStatuses, $lockedOrderStatuses);
 
                 if ($changeError !== '') {
@@ -161,13 +223,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
-                $error = 'Failed to update order status: ' . $e->getMessage();
+                $error = 'Order status not updated. ' . safeErrorMessage($e, 'Order status update failed');
             }
         }
     }
 
     if ($action === 'delete') {
-        $id = intval($_POST['id'] ?? 0);
         if ($id > 0) {
             try {
                 $db->beginTransaction();
@@ -175,22 +236,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cur->execute([$id]);
                 $prevStatus = $cur->fetchColumn();
 
-                // Delivered items have left the inventory and cancelled orders were already restocked
-                if ($prevStatus !== false && !in_array($prevStatus, ['cancelled', 'delivered'], true)) {
-                    restoreOrderStock($db, $id);
-                }
+                if ($prevStatus === false) {
+                    $db->rollBack();
+                    $error = 'This order no longer exists.';
+                } else {
+                    // Delivered items have left the inventory and cancelled orders were already restocked
+                    if (!in_array($prevStatus, ['cancelled', 'delivered'], true)) {
+                        restoreOrderStock($db, $id);
+                    }
 
-                $stmt = $db->prepare("DELETE FROM orders WHERE id = ?");
-                $stmt->execute([$id]);
-                $db->commit();
-                logActivity($_SESSION['user_id'], 'ORDER_DELETED', "Deleted order ID $id");
-                $message = 'Order deleted successfully!';
+                    $stmt = $db->prepare("DELETE FROM orders WHERE id = ?");
+                    $stmt->execute([$id]);
+                    $db->commit();
+                    logActivity($_SESSION['user_id'], 'ORDER_DELETED', "Deleted order ID $id");
+                    $message = 'Order deleted successfully!';
+                }
             } catch (Exception $e) {
                 if ($db->inTransaction()) $db->rollBack();
-                $error = 'Failed to delete order: ' . $e->getMessage();
+                $error = 'Order not deleted. ' . safeErrorMessage($e, 'Order delete failed');
             }
         }
     }
+
+    // Post/Redirect/Get: show the result after a redirect so refreshing never repeats the action
+    if ($message !== '') setFlash('success', $message);
+    if ($error !== '') setFlash('error', $error);
+    redirectTo('orders.php');
 }
 
 $orders = $db->query("
@@ -457,6 +528,7 @@ require_once __DIR__ . '/includes/header.php';
                                             <i class="fa-solid fa-arrows-rotate"></i> Status
                                         </button>
                                         <form method="POST" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this order record?')">
+                                            <?= csrfField() ?>
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="id" value="<?= $o['id'] ?>">
                                             <button type="submit" class="btn-danger-glow" style="padding: 0.35rem 0.65rem; font-size: 0.78rem;" title="Delete Order">
@@ -497,6 +569,7 @@ require_once __DIR__ . '/includes/header.php';
 
         <div style="display: flex; gap: 0.75rem; justify-content: center;">
             <form method="POST" style="flex: 1;">
+                <?= csrfField() ?>
                 <input type="hidden" name="action" value="approve_payment">
                 <input type="hidden" name="id" id="receipt_approve_id">
                 <button type="submit" id="receipt_approve_btn" class="btn-green-primary" style="width: 100%; padding: 0.75rem; justify-content: center;">
@@ -505,6 +578,7 @@ require_once __DIR__ . '/includes/header.php';
             </form>
 
             <form method="POST" style="flex: 1;" onsubmit="return confirm('Are you sure you want to reject this payment and cancel the order?')">
+                <?= csrfField() ?>
                 <input type="hidden" name="action" value="reject_payment">
                 <input type="hidden" name="id" id="receipt_reject_id">
                 <button type="submit" id="receipt_reject_btn" class="btn-danger-glow" style="width: 100%; padding: 0.75rem; justify-content: center;">
@@ -522,6 +596,7 @@ require_once __DIR__ . '/includes/header.php';
         <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem;">Update Order Status</h3>
 
         <form method="POST">
+            <?= csrfField() ?>
             <input type="hidden" name="action" value="update_status">
             <input type="hidden" name="id" id="status_order_id">
 
@@ -639,57 +714,29 @@ function viewOrderDetails(orderId) {
     document.getElementById('viewModal').style.display = 'flex';
     document.getElementById('orderDetailsContent').innerHTML = 'Loading...';
 
-    fetch('orders.php?ajax_details=' + orderId)
-        .then(res => res.text())
-        .then(data => {
-            document.getElementById('orderDetailsContent').innerHTML = data;
-        });
+    const box = document.getElementById('orderDetailsContent');
+    const showProblem = (msg) => {
+        box.innerHTML = '';
+        const div = document.createElement('div');
+        div.className = 'form-alert form-alert-error';
+        div.textContent = msg;
+        box.appendChild(div);
+    };
+    fetch('orders.php?ajax_details=' + encodeURIComponent(orderId), {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+    })
+        .then(res => {
+            if (res.ok) return res.text().then(html => { box.innerHTML = html; });
+            return res.json()
+                .then(data => showProblem(data.message || 'Something went wrong. Please try again later.'))
+                .catch(() => showProblem('Something went wrong. Please try again later.'));
+        })
+        .catch(() => showProblem('Could not load the order details. Please check your connection and try again.'));
 }
 function closeViewModal() { document.getElementById('viewModal').style.display = 'none'; }
 </script>
 
 <?php
-if (isset($_GET['ajax_details'])) {
-    $orderId = intval($_GET['ajax_details']);
-    $oStmt = $db->prepare("SELECT * FROM orders WHERE id = ?");
-    $oStmt->execute([$orderId]);
-    $order = $oStmt->fetch();
-
-    if ($order) {
-        $iStmt = $db->prepare("SELECT * FROM order_items WHERE order_id = ?");
-        $iStmt->execute([$orderId]);
-        $items = $iStmt->fetchAll();
-
-        echo "<div style='display:flex; flex-direction:column; gap:0.5rem; margin-bottom:1rem; color: #1f2937;'>";
-        echo "<div><strong style='color:#064e3b;'>Order #:</strong> " . htmlspecialchars($order['order_number']) . "</div>";
-        echo "<div><strong style='color:#064e3b;'>Customer Name:</strong> " . htmlspecialchars($order['customer_name']) . "</div>";
-        echo "<div><strong style='color:#064e3b;'>Phone:</strong> " . htmlspecialchars($order['phone']) . "</div>";
-        echo "<div><strong style='color:#064e3b;'>Delivery Address:</strong> " . htmlspecialchars($order['delivery_address']) . "</div>";
-        echo "<div><strong style='color:#064e3b;'>Payment Method:</strong> " . htmlspecialchars($order['payment_method']) . " (" . ucfirst($order['payment_status'] ?? 'unpaid') . ")</div>";
-        if (!empty($order['payment_receipt'])) {
-            echo "<div><strong style='color:#064e3b;'>GCash Receipt:</strong> <a href='../" . htmlspecialchars($order['payment_receipt']) . "' target='_blank' style='color:#15803d; font-weight:600;'>View Full Image</a></div>";
-        }
-        echo "<div><strong style='color:#064e3b;'>Discount:</strong> " . htmlspecialchars($order['discount_type'] ?? 'None') . " (-₱" . number_format($order['discount_amount'], 2) . ")</div>";
-        echo "<div><strong style='color:#064e3b;'>Shipping Fee:</strong> ₱" . number_format($order['shipping_cost'], 2) . "</div>";
-        echo "<div><strong style='color:#064e3b;'>Tax Amount:</strong> ₱" . number_format($order['tax_amount'], 2) . "</div>";
-        echo "<div style='font-size:1.1rem; font-weight:700; color:#15803d; margin-top:0.3rem;'><strong>Grand Total:</strong> ₱" . number_format($order['total_amount'], 2) . "</div>";
-        echo "</div>";
-
-        echo "<h4 style='font-weight:700; margin-bottom:0.5rem; color:#064e3b;'>Ordered Items:</h4>";
-        echo "<table class='custom-table'>";
-        echo "<thead><tr><th style='padding:0.4rem;'>Item</th><th style='padding:0.4rem; text-align:center;'>Qty</th><th style='padding:0.4rem; text-align:right;'>Price</th><th style='padding:0.4rem; text-align:right;'>Subtotal</th></tr></thead><tbody>";
-        foreach ($items as $it) {
-            echo "<tr>";
-            echo "<td style='padding:0.4rem; color: #1f2937;'>" . htmlspecialchars($it['product_name']) . "</td>";
-            echo "<td style='padding:0.4rem; text-align:center;'>" . $it['quantity'] . "</td>";
-            echo "<td style='padding:0.4rem; text-align:right;'>₱" . number_format($it['price'], 2) . "</td>";
-            echo "<td style='padding:0.4rem; text-align:right; font-weight:700; color:#15803d;'>₱" . number_format($it['subtotal'], 2) . "</td>";
-            echo "</tr>";
-        }
-        echo "</tbody></table>";
-    }
-    exit;
-}
-
 require_once __DIR__ . '/includes/footer.php';
 ?>

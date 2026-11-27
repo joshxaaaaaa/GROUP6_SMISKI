@@ -1,43 +1,74 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
+
+// Logged-in users don't need to register again
+if (isset($_SESSION['user_id'])) {
+    header("Location: " . (isAdminLoggedIn() ? '../admin/index.php' : 'index.php'));
+    exit;
+}
 
 $error = '';
 $success = '';
+$errors = [];   // field => message
+$old = [];      // values to keep in the form (never the password)
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $name = sanitize($_POST['name'] ?? '');
-    $email = sanitize($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
-    $address = sanitize($_POST['address'] ?? '');
-    $phone = trim($_POST['phone'] ?? '');
+    $v = new Validator($_POST);
+    $name = $v->personName('name');
+    $email = $v->email('email');
+    $password = $v->newPassword('password');
+    $v->confirmation('password_confirm', $password);
+    $phone = $v->phone('phone');
+    $address = $v->text('address', ['required' => true, 'min' => 5, 'max' => 500, 'multiline' => true,
+        'minMessage' => 'Please enter your complete delivery address (at least 5 characters).']);
+    $errors = $v->errors();
+    $old = ['name' => $name, 'email' => $email, 'phone' => $phone, 'address' => $address];
 
-    if (empty($name) || empty($email) || empty($password) || empty($address) || $phone === '') {
-        $error = 'Please fill in all required fields.';
-    } elseif (!isValidPhone($phone)) {
-        $error = 'Phone number must contain numbers only (7 to 15 digits, no letters, spaces or special characters).';
-    } else {
-        $db = getDB();
+    $db = getDB();
+    if (empty($errors['email'])) {
         $stmt = $db->prepare("SELECT id FROM users WHERE email = ?");
         $stmt->execute([$email]);
         if ($stmt->fetch()) {
-            $error = 'Email address is already registered.';
-        } else {
-            // I-hash ang password para secure bago i-save sa database
-            $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+            $errors['email'] = MSG_EMAIL_TAKEN;
+        }
+    }
 
+    if ($errors) {
+        http_response_code(422);
+        $error = isset($errors['email']) && $errors['email'] === MSG_EMAIL_TAKEN && count($errors) === 1
+            ? MSG_EMAIL_TAKEN . ' Please log in instead or use a different email address.'
+            : MSG_FORM_ERRORS;
+    } else {
+        // I-hash ang password para secure bago i-save sa database
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
+        try {
             $stmt = $db->prepare("INSERT INTO users (full_name, email, password, address, phone, role, status) VALUES (?, ?, ?, ?, ?, 'customer', 'active')");
-            if ($stmt->execute([$name, $email, $hashedPassword, $address, $phone])) {
-                $newUserId = $db->lastInsertId();
+            $stmt->execute([$name, $email, $hashedPassword, $address, $phone]);
+            $newUserId = $db->lastInsertId();
+        } catch (PDOException $e) {
+            $newUserId = false;
+            if ($e->getCode() === '23000') {
+                // Same email registered at the same moment (double submit / another tab)
+                $errors['email'] = MSG_EMAIL_TAKEN;
+                $error = MSG_EMAIL_TAKEN;
+                http_response_code(409);
+            } else {
+                $error = safeErrorMessage($e, 'Registration failed');
+                http_response_code(500);
+            }
+        }
+
+        if ($newUserId) {
                 if (function_exists('logActivity')) {
                     logActivity($newUserId, 'CUSTOMER_REGISTER', 'New customer registered: ' . $email);
                 }
 
+                regenerateSessionAfterLogin();
                 $_SESSION['user_id'] = $newUserId;
                 $_SESSION['user_name'] = $name;
                 $_SESSION['user_email'] = $email;
@@ -51,11 +82,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $redirect = $_SESSION['redirect_after_login'] ?? 'index.php';
                 unset($_SESSION['redirect_after_login']);
+                setFlash('success', 'Welcome, ' . $name . '! Your account has been created successfully.');
                 header("Location: $redirect");
                 exit;
-            } else {
-                $error = 'Failed to create account. Please try again.';
-            }
         }
     }
 }
@@ -68,6 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Register / Sign Up - E-Commerce Store</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="../assets/css/form-feedback.css">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Outfit', sans-serif; }
         
@@ -272,37 +302,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <?php endif; ?>
 
     <form id="registerForm" method="POST" action="register.php">
+        <?= csrfField() ?>
         <div class="form-group">
             <label for="name">Full Name</label>
-            <input type="text" id="name" name="name" class="input-control hover-scale" required placeholder="John Doe" value="<?= htmlspecialchars($_POST['name'] ?? '') ?>">
+            <input type="text" id="name" name="name" class="input-control hover-scale<?= invalidClass($errors, 'name') ?>"<?= invalidAttr($errors, 'name') ?> required minlength="2" maxlength="100" autocomplete="name" placeholder="John Doe" value="<?= oldValue($old, 'name') ?>">
+            <?= fieldError($errors, 'name') ?>
         </div>
 
         <div class="form-group">
             <label for="email">Email Address</label>
-            <input type="email" id="email" name="email" class="input-control hover-scale" required placeholder="john@example.com" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>">
+            <input type="email" id="email" name="email" class="input-control hover-scale<?= invalidClass($errors, 'email') ?>"<?= invalidAttr($errors, 'email') ?> required maxlength="100" autocomplete="email" placeholder="john@example.com" value="<?= oldValue($old, 'email') ?>">
+            <?= fieldError($errors, 'email') ?>
         </div>
 
         <div class="form-group">
             <label for="password">Password</label>
             <div style="position: relative;">
-                <input type="password" id="password" name="password" class="input-control hover-scale" required placeholder="••••••••" style="padding-right: 2.5rem;">
+                <input type="password" id="password" name="password" class="input-control hover-scale<?= invalidClass($errors, 'password') ?>"<?= invalidAttr($errors, 'password') ?> required minlength="8" maxlength="72" data-password-strength autocomplete="new-password" placeholder="••••••••" style="padding-right: 2.5rem;">
                 <button type="button" onclick="togglePassword('password', 'toggleIcon')" style="position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #4b5563; font-size: 1rem;" title="Show/Hide Password" onmouseover="this.style.color='#15803d'" onmouseout="this.style.color='#4b5563'">
                     <i id="toggleIcon" class="fa-solid fa-eye"></i>
                 </button>
             </div>
+            <?= fieldError($errors, 'password') ?>
+            <small class="field-hint">At least 8 characters, including a letter and a number.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="password_confirm">Confirm Password</label>
+            <div style="position: relative;">
+                <input type="password" id="password_confirm" name="password_confirm" class="input-control hover-scale<?= invalidClass($errors, 'password_confirm') ?>"<?= invalidAttr($errors, 'password_confirm') ?> required maxlength="72" data-match="#password" autocomplete="new-password" placeholder="••••••••" style="padding-right: 2.5rem;">
+                <button type="button" onclick="togglePassword('password_confirm', 'toggleIconConfirm')" style="position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #4b5563; font-size: 1rem;" title="Show/Hide Password" onmouseover="this.style.color='#15803d'" onmouseout="this.style.color='#4b5563'">
+                    <i id="toggleIconConfirm" class="fa-solid fa-eye"></i>
+                </button>
+            </div>
+            <?= fieldError($errors, 'password_confirm') ?>
         </div>
 
         <div class="form-group">
             <label for="phone">Phone Number</label>
-            <input type="tel" id="phone" name="phone" class="input-control hover-scale" required placeholder="09123456789" inputmode="numeric" pattern="[0-9]{7,15}" minlength="7" maxlength="15" autocomplete="tel" title="Numbers only (7 to 15 digits)" value="<?= htmlspecialchars($_POST['phone'] ?? '') ?>">
-            <small id="phoneError" style="display: none; color: #b91c1c; font-size: 0.78rem; font-weight: 600; margin-top: 0.35rem;">
-                <i class="fa-solid fa-circle-exclamation"></i> <span></span>
-            </small>
+            <input type="tel" id="phone" name="phone" class="input-control hover-scale<?= invalidClass($errors, 'phone') ?>"<?= invalidAttr($errors, 'phone') ?> required placeholder="09123456789" data-phone-input inputmode="numeric" pattern="[0-9]{7,15}" maxlength="15" autocomplete="tel" title="Numbers only (7 to 15 digits)" value="<?= oldValue($old, 'phone') ?>">
+            <?= fieldError($errors, 'phone') ?>
         </div>
 
         <div class="form-group">
             <label for="address">Delivery Address</label>
-            <textarea id="address" name="address" class="input-control hover-scale" rows="3" required placeholder="Complete delivery address..."><?= htmlspecialchars($_POST['address'] ?? '') ?></textarea>
+            <textarea id="address" name="address" class="input-control hover-scale<?= invalidClass($errors, 'address') ?>"<?= invalidAttr($errors, 'address') ?> rows="3" required minlength="5" maxlength="500" data-counter placeholder="Complete delivery address..."><?= oldValue($old, 'address') ?></textarea>
+            <?= fieldError($errors, 'address') ?>
         </div>
 
         <div class="btn-row">
@@ -320,6 +365,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 </div>
 
+<script src="../assets/js/form-validation.js"></script>
 <script>
 function togglePassword(inputId, iconId) {
     const input = document.getElementById(inputId);
@@ -332,66 +378,6 @@ function togglePassword(inputId, iconId) {
         icon.className = 'fa-solid fa-eye';
     }
 }
-
-(function () {
-    const phoneInput = document.getElementById('phone');
-    const phoneError = document.getElementById('phoneError');
-    const form = document.getElementById('registerForm');
-
-    function showPhoneError(msg) {
-        if (!phoneError) return;
-        phoneError.querySelector('span').textContent = msg;
-        phoneError.style.display = msg ? 'block' : 'none';
-    }
-
-    function validatePhone() {
-        const value = phoneInput.value;
-        if (value === '') {
-            phoneInput.setCustomValidity('Please enter your phone number.');
-            return false;
-        }
-        if (!/^[0-9]+$/.test(value)) {
-            phoneInput.setCustomValidity('Phone number must contain numbers only.');
-            return false;
-        }
-        if (value.length < 7 || value.length > 15) {
-            phoneInput.setCustomValidity('Phone number must be 7 to 15 digits long.');
-            return false;
-        }
-        phoneInput.setCustomValidity('');
-        return true;
-    }
-
-    // Block letters and special characters as they are typed
-    phoneInput.addEventListener('keydown', function (e) {
-        if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return; // allow shortcuts, arrows, backspace...
-        if (!/[0-9]/.test(e.key)) {
-            e.preventDefault();
-            showPhoneError('Only numbers (0-9) are allowed.');
-        }
-    });
-
-    // Strip anything that is not a digit (paste, autofill, mobile keyboards)
-    phoneInput.addEventListener('input', function () {
-        const digitsOnly = phoneInput.value.replace(/[^0-9]/g, '').slice(0, 15);
-        if (digitsOnly !== phoneInput.value) {
-            phoneInput.value = digitsOnly;
-            showPhoneError('Only numbers (0-9) are allowed.');
-        } else {
-            showPhoneError('');
-        }
-        validatePhone();
-    });
-
-    form.addEventListener('submit', function (e) {
-        if (!validatePhone()) {
-            e.preventDefault();
-            showPhoneError(phoneInput.validationMessage);
-            phoneInput.reportValidity();
-            phoneInput.focus();
-        }
-    });
-})();
 
 function clearForm() {
     document.getElementById('registerForm').reset();

@@ -1,11 +1,8 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 // Ensure the path to db.php is correct
 require_once '../config/db.php';
 
@@ -23,43 +20,47 @@ $formSubject = '';
 $formMessage = '';
 $reopenForm = false;
 
+$msgErrors = [];   // field => message
+$msgOld = [];
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'send_message') {
-    $formSubject = $_POST['subject'] ?? '';
-    $formMessage = $_POST['message'] ?? '';
-
     if (!$isLoggedIn) {
-        $messageError = 'You must be logged in to send a support inquiry.';
-    } else {
-        $name = trim($_POST['name'] ?? '');
-        $email = trim($_POST['email'] ?? '');
-        $subject = trim($formSubject);
-        $message = trim($formMessage);
+        abortRequest(401, 'Please log in to send a support inquiry.', 'login.php');
+    }
+    if (isAdminLoggedIn()) {
+        abortRequest(403, MSG_UNAUTHORIZED . ' Support inquiries can only be sent from customer accounts.', 'messages.php');
+    }
 
-        if (empty($name) || empty($email) || empty($subject) || empty($message)) {
-            $messageError = 'Please fill in all required fields.';
-            $reopenForm = true;
-        } elseif (!consumeFormToken('support_message', $_POST['form_token'] ?? '')) {
-            // The same form was submitted again (page refresh / double click): do not create another ticket
-            $_SESSION['support_flash_error'] = 'This message was already submitted. Your ticket is listed below.';
-            header("Location: messages.php");
+    // The ticket is always filed under the logged-in account's email
+    [$values, $msgErrors] = validateSupportMessage($_POST, $userEmail);
+    $msgOld = $values;
+    $formSubject = $values['subject'];
+    $formMessage = $values['message'];
+
+    if ($msgErrors) {
+        $messageError = 'Your message was not sent. ' . MSG_FORM_ERRORS;
+        $reopenForm = true;
+        http_response_code(422);
+    } elseif (isMessageRateLimited($values['email'])) {
+        $messageError = MSG_RATE_LIMITED;
+        $reopenForm = true;
+        http_response_code(429);
+    } elseif (!consumeFormToken('support_message', $_POST['form_token'] ?? '')) {
+        // The same form was submitted again (page refresh / double click): do not create another ticket
+        $_SESSION['support_flash_error'] = MSG_DUPLICATE . ' Your ticket is listed below.';
+        header("Location: messages.php", true, 303);
+        exit;
+    } else {
+        try {
+            saveSupportMessage($values);
+            $_SESSION['support_flash_success'] = 'Your message has been sent successfully! Our support team will reply here.';
+            // Redirect so refreshing the page does not resubmit the form
+            header("Location: messages.php", true, 303);
             exit;
-        } else {
-            try {
-                $stmt = $db->prepare("INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)");
-                $result = $stmt->execute([$name, $email, $subject, $message]);
-                
-                if ($result) {
-                    $_SESSION['support_flash_success'] = 'Your message has been sent successfully!';
-                    // Redirect so refreshing the page does not resubmit the form
-                    header("Location: messages.php");
-                    exit;
-                }
-                $messageError = 'Failed to send your message. Please try again.';
-                $reopenForm = true;
-            } catch (PDOException $e) {
-                $messageError = 'Database Error: ' . $e->getMessage();
-                $reopenForm = true;
-            }
+        } catch (Exception $e) {
+            $messageError = 'Your message was not sent. ' . safeErrorMessage($e, 'Support message save failed');
+            $reopenForm = true;
+            http_response_code(500);
         }
     }
 }
@@ -309,12 +310,14 @@ if (file_exists('includes/header.php')) {
         <button type="button" onclick="closeContactPane()" style="position: absolute; top: 1.25rem; right: 1.5rem; background: none; border: none; font-size: 1.75rem; cursor: pointer; color: #166534; transition: color 0.2s;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#166534'">&times;</button>
         <span style="background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(10px); color: #064e3b; font-size: 0.75rem; font-weight: 700; padding: 0.3rem 0.8rem; border-radius: 20px; display: inline-block; margin-bottom: 0.75rem; border: 1px solid rgba(74,222,128,0.6);">NEW MESSAGE</span>
         <h3 class="neon-glow-text" style="margin-bottom: 1.5rem; font-size: 1.5rem; font-weight: 700;">Send Support Inquiry</h3>
-        <form method="POST" action="messages.php" onsubmit="const b = this.querySelector('button[type=submit]'); if (b) { b.disabled = true; b.textContent = 'Sending...'; }">
+        <form method="POST" action="messages.php">
+            <?= csrfField() ?>
             <input type="hidden" name="action" value="send_message">
             <input type="hidden" name="form_token" value="<?= htmlspecialchars($supportFormToken) ?>">
             <div style="margin-bottom: 1.15rem;">
                 <label class="text-muted-green" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 0.35rem;">Name</label>
-                <input type="text" name="name" required value="<?= htmlspecialchars($_SESSION['user_name'] ?? '') ?>" class="hover-scale" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; backdrop-filter: blur(10px);">
+                <input type="text" name="name" required minlength="2" maxlength="100" value="<?= oldValue($msgOld, 'name', $_SESSION['user_name'] ?? '') ?>"<?= invalidAttr($msgErrors, 'name') ?> class="hover-scale<?= invalidClass($msgErrors, 'name') ?>" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; backdrop-filter: blur(10px);">
+                <?= fieldError($msgErrors, 'name') ?>
             </div>
             <div style="margin-bottom: 1.15rem;">
                 <label class="text-muted-green" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 0.35rem;">Email</label>
@@ -322,11 +325,13 @@ if (file_exists('includes/header.php')) {
             </div>
             <div style="margin-bottom: 1.15rem;">
                 <label class="text-muted-green" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 0.35rem;">Subject</label>
-                <input type="text" name="subject" required value="<?= htmlspecialchars($formSubject) ?>" class="hover-scale" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; backdrop-filter: blur(10px);">
+                <input type="text" name="subject" required minlength="3" maxlength="200" value="<?= htmlspecialchars($formSubject) ?>"<?= invalidAttr($msgErrors, 'subject') ?> class="hover-scale<?= invalidClass($msgErrors, 'subject') ?>" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; backdrop-filter: blur(10px);">
+                <?= fieldError($msgErrors, 'subject') ?>
             </div>
             <div style="margin-bottom: 1.75rem;">
                 <label class="text-muted-green" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 0.35rem;">Message</label>
-                <textarea name="message" rows="4" required class="hover-scale" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; resize: vertical; backdrop-filter: blur(10px);"><?= htmlspecialchars($formMessage) ?></textarea>
+                <textarea name="message" rows="4" required minlength="10" maxlength="2000" data-counter<?= invalidAttr($msgErrors, 'message') ?> class="hover-scale<?= invalidClass($msgErrors, 'message') ?>" style="width: 100%; padding: 0.75rem 1rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; color: #1f2937; outline: none; resize: vertical; backdrop-filter: blur(10px);"><?= htmlspecialchars($formMessage) ?></textarea>
+                <?= fieldError($msgErrors, 'message') ?>
             </div>
             <div style="display: flex; gap: 1rem; justify-content: flex-end;">
                 <button type="button" onclick="closeContactPane()" class="btn-green-secondary">Cancel</button>

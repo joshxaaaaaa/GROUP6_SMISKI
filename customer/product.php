@@ -1,7 +1,14 @@
 <?php
 require_once __DIR__ . '/../config/db.php';
 
-$id = intval($_GET['id'] ?? 0);
+// Product ID must be a positive whole number
+$rawId = $_GET['id'] ?? '';
+if (!is_string($rawId) || !ctype_digit($rawId) || (int)$rawId < 1) {
+    setFlash('error', 'Invalid product link. ' . MSG_INVALID_OPERATION);
+    header("Location: index.php", true, 303);
+    exit;
+}
+$id = (int)$rawId;
 $db = getDB();
 
 $stmt = $db->prepare("SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.id = ? AND p.status = 'active'");
@@ -9,7 +16,8 @@ $stmt->execute([$id]);
 $product = $stmt->fetch();
 
 if (!$product) {
-    header("Location: index.php");
+    setFlash('error', 'Sorry, this product could not be found or is no longer available.');
+    header("Location: index.php", true, 303);
     exit;
 }
 
@@ -114,7 +122,7 @@ require_once __DIR__ . '/includes/header.php';
                 <div style="margin-bottom: 1.5rem;">
                     <h4 class="neon-glow-text" style="font-size: 0.95rem; font-weight: 700; margin-bottom: 0.4rem;">Description</h4>
                     <p style="color: #1f2937; line-height: 1.6; font-size: 0.95rem; font-weight: 500;">
-                        <?= nl2br(htmlspecialchars($product['description'])) ?>
+                        <?= nl2br(htmlspecialchars($product['description'] ?? '')) ?>
                     </p>
                 </div>
 
@@ -137,7 +145,7 @@ require_once __DIR__ . '/includes/header.php';
                     <button type="button" onclick="addToCart(<?= $product['id'] ?>, '<?= htmlspecialchars(addslashes($product['name'])) ?>')" class="hover-scale btn" style="flex: 1; min-width: 160px; padding: 0.85rem; background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); color: #064e3b; border: 1px solid rgba(74, 222, 128, 0.7); border-radius: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 15px rgba(0,0,0,0.1), 0 0 10px rgba(74, 222, 128, 0.4);">
                         <i class="fa-solid fa-cart-plus"></i> Add To Cart
                     </button>
-                    <a href="cart.php?action=buy_now&id=<?= $product['id'] ?>" class="hover-scale btn" style="flex: 1; min-width: 160px; padding: 0.85rem; background: #16a34a; backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); color: white; border: 1px solid rgba(74, 222, 128, 0.8); border-radius: 14px; font-weight: 600; text-align: center; text-decoration: none; box-shadow: 0 6px 20px rgba(22, 163, 74, 0.4), 0 0 15px rgba(74, 222, 128, 0.5);">
+                    <a href="cart.php?action=buy_now&id=<?= (int)$product['id'] ?>&<?= csrfQuery() ?>" class="hover-scale btn" style="flex: 1; min-width: 160px; padding: 0.85rem; background: #16a34a; backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); color: white; border: 1px solid rgba(74, 222, 128, 0.8); border-radius: 14px; font-weight: 600; text-align: center; text-decoration: none; box-shadow: 0 6px 20px rgba(22, 163, 74, 0.4), 0 0 15px rgba(74, 222, 128, 0.5);">
                         <i class="fa-solid fa-bolt"></i> BUY NOW
                     </a>
                 </div>

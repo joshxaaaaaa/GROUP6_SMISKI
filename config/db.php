@@ -2,8 +2,20 @@
 
 
 if (session_status() === PHP_SESSION_NONE) {
+    // Session cookie cannot be read by JavaScript and is not sent on cross-site requests
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'secure'   => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+    ini_set('session.use_strict_mode', '1');
     session_start();
 }
+
+// Validation, CSRF, error handling and response helpers
+require_once __DIR__ . '/validation.php';
 
 define('DB_HOST', 'localhost');
 define('DB_PORT', '3307');
@@ -24,7 +36,13 @@ function getDB() {
             ];
             $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
         } catch (PDOException $e) {
-            die("Database Connection Error: " . $e->getMessage());
+            // Never show connection details (host, user, password) to visitors
+            logAppError('Database connection failed', $e);
+            if (isAjaxRequest()) {
+                jsonResponse(503, ['success' => false, 'message' => MSG_SERVER_ERROR]);
+            }
+            renderErrorPage(503, MSG_SERVER_ERROR);
+            exit;
         }
     }
     return $pdo;
@@ -38,7 +56,7 @@ function logActivity($userId, $action, $description) {
         $stmt = $db->prepare("INSERT INTO activity_logs (user_id, action, description, ip_address) VALUES (?, ?, ?, ?)");
         $stmt->execute([$userId, $action, $description, $ip]);
     } catch (Exception $e) {
-        
+        logAppError('Activity log write failed', $e);
     }
 }
 
@@ -224,3 +242,6 @@ function persistCart() {
         // Keep the session cart even if saving fails
     }
 }
+
+// Every POST request must include a valid CSRF token (see config/validation.php)
+enforceCsrfOnPost();

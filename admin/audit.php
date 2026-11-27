@@ -15,6 +15,7 @@ $actionsList = [
     'CUSTOMER_LOGOUT',
     'CUSTOMER_REGISTER',
     'CUSTOMER_UPDATED',
+    'LOGIN_FAILED',
     'MESSAGE_DELETED',
     'MESSAGE_REPLIED',
     'ORDER_DELETED',
@@ -26,13 +27,28 @@ $actionsList = [
     'PRODUCT_UPDATED'
 ];
 
+$filterNotice = '';
+
+// Only known action types are accepted as filters
 $selectedActions = $_GET['actions'] ?? [];
 if (!is_array($selectedActions)) {
     $selectedActions = [$selectedActions];
 }
-$selectedActions = array_filter($selectedActions);
+$requestedActions = array_filter($selectedActions, 'is_string');
+$selectedActions = array_values(array_intersect($requestedActions, $actionsList));
+if (count($selectedActions) !== count(array_filter($requestedActions))) {
+    $filterNotice = 'Some selected action filters were not recognised and have been ignored.';
+}
 
-$search = trim($_GET['search'] ?? '');
+$rawSearch = $_GET['search'] ?? '';
+$search = is_string($rawSearch) ? trim(preg_replace('/[\x00-\x1F\x7F]/u', '', $rawSearch)) : '';
+if (!is_string($rawSearch) || !mb_check_encoding($search, 'UTF-8')) {
+    $search = '';
+    $filterNotice = 'The search keyword could not be processed. Please try a different keyword.';
+} elseif (mb_strlen($search, 'UTF-8') > 100) {
+    $search = mb_substr($search, 0, 100, 'UTF-8');
+    $filterNotice = 'Search keywords are limited to 100 characters, so your search was shortened.';
+}
 
 $sql = "
     SELECT a.*, u.full_name, u.email, u.role
@@ -43,11 +59,13 @@ $sql = "
 $params = [];
 
 if (!empty($search)) {
+    // Treat % and _ typed by the admin as normal characters
+    $like = '%' . addcslashes($search, '%_\\') . '%';
     $sql .= " AND (a.action LIKE ? OR a.description LIKE ? OR u.full_name LIKE ? OR u.email LIKE ?)";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
+    $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
 }
 
 if (!empty($selectedActions)) {
@@ -192,13 +210,14 @@ require_once __DIR__ . '/includes/header.php';
                 <i class="fa-solid fa-filter" style="color: #15803d;"></i> Log Action Checklist
             </h3>
 
+            <?= alertBox('info', $filterNotice) ?>
             <form method="GET" action="audit.php">
                 
                 <div style="margin-bottom: 1.25rem;">
                     <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Search Logs</label>
                     <div style="position: relative;">
                         <span style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #9ca3af;"><i class="fa-solid fa-search"></i></span>
-                        <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" placeholder="Search keyword..." class="smiski-input">
+                        <input type="text" name="search" maxlength="100" value="<?= htmlspecialchars($search) ?>" placeholder="Search keyword..." class="smiski-input">
                     </div>
                 </div>
 
@@ -207,7 +226,7 @@ require_once __DIR__ . '/includes/header.php';
                     <div style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 260px; overflow-y: auto; padding-right: 0.5rem;">
                         <?php foreach ($actionsList as $act): ?>
                             <label style="display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; cursor: pointer; color: #374151; font-weight: 500;">
-                                <input type="checkbox" name="actions[]" value="<?= $act ?>" <?= in_array($act, $selectedActions) ? 'checked' : '' ?> style="accent-color: #15803d; width: 16px; height: 16px; border-radius: 4px;">
+                                <input type="checkbox" name="actions[]" value="<?= htmlspecialchars($act) ?>" <?= in_array($act, $selectedActions) ? 'checked' : '' ?> style="accent-color: #15803d; width: 16px; height: 16px; border-radius: 4px;">
                                 <?= htmlspecialchars($act) ?>
                             </label>
                         <?php endforeach; ?>

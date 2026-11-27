@@ -76,11 +76,22 @@ $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $cartItems = [];
 $subtotal = 0;
+$cartProblems = [];   // availability / stock problems found in the cart
 
 foreach ($products as $p) {
-    $qty = $_SESSION['cart'][$p['id']];
-    $itemSubtotal = $p['price'] * $qty;
+    $qty = (int)$_SESSION['cart'][$p['id']];
+    if ($qty < 1) {
+        continue;
+    }
+    // Prices always come from the database, never from the browser
+    $itemSubtotal = round((float)$p['price'] * $qty, 2);
     $subtotal += $itemSubtotal;
+
+    if (($p['status'] ?? 'active') !== 'active') {
+        $cartProblems[] = '"' . $p['name'] . '" is no longer available.';
+    } elseif ($qty > (int)$p['stock_quantity']) {
+        $cartProblems[] = '"' . $p['name'] . '": ' . msgInsufficientStock($p['stock_quantity']);
+    }
 
     $cartItems[] = [
         'id' => $p['id'],
@@ -90,98 +101,143 @@ foreach ($products as $p) {
         'subtotal' => $itemSubtotal
     ];
 }
+$subtotal = round($subtotal, 2);
+
+if (empty($cartItems)) {
+    setFlash('error', 'Your cart is empty or its items are no longer available.');
+    header("Location: cart.php", true, 303);
+    exit;
+}
+// Stock changed since the items were added: send the customer back to fix the cart
+if ($cartProblems) {
+    $_SESSION['cart_error'] = 'Please update your cart before checking out. ' . implode(' ', $cartProblems);
+    header("Location: cart.php", true, 303);
+    exit;
+}
+
+// The logged-in account must still exist and be active
+$accountStmt = $db->prepare("SELECT id, status FROM users WHERE id = ? AND role = 'customer'");
+$accountStmt->execute([(int)$_SESSION['user_id']]);
+$account = $accountStmt->fetch();
+if (!$account || $account['status'] !== 'active') {
+    $_SESSION = [];
+    session_regenerate_id(true);
+    setFlash('error', 'Your account is not available. Please log in again or contact support.');
+    header("Location: login.php", true, 303);
+    exit;
+}
 
 $error = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $customerName = sanitize($_POST['customer_name'] ?? ($_SESSION['user_name'] ?? ''));
-    $phone = sanitize($_POST['phone'] ?? ($_SESSION['user_phone'] ?? ''));
-    $address = sanitize($_POST['delivery_address'] ?? ($_SESSION['user_address'] ?? ''));
-    $paymentMethod = sanitize($_POST['payment_method'] ?? 'COD');
+$errors = [];   // field => message
+$old = [];      // entered values to keep when validation fails
 
+$allowedPaymentMethods = ['Cash on Delivery (COD)', 'E-Wallet / GCash', 'Credit / Debit Card'];
+
+/** Luhn checksum used by all major card networks. */
+function isValidCardNumber($digits) {
+    if (!preg_match('/^\d{13,19}$/', $digits)) {
+        return false;
+    }
+    $sum = 0;
+    $double = false;
+    for ($i = strlen($digits) - 1; $i >= 0; $i--) {
+        $n = (int)$digits[$i];
+        if ($double) {
+            $n *= 2;
+            if ($n > 9) $n -= 9;
+        }
+        $sum += $n;
+        $double = !$double;
+    }
+    return $sum % 10 === 0;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $v = new Validator($_POST);
+    $customerName = $v->personName('customer_name');
+    $phone = $v->phone('phone');
+    $address = $v->text('delivery_address', ['required' => true, 'min' => 5, 'max' => 500, 'multiline' => true,
+        'minMessage' => 'Please enter your complete delivery address (at least 5 characters).']);
+    $paymentChoice = $v->choice('payment_method', $allowedPaymentMethods, ['requiredMessage' => 'Please choose a payment method.']);
+    $discountChoice = $v->choice('apply_loyalty_discount', ['0', '1'], ['required' => false, 'message' => MSG_INVALID_OPERATION]);
+    $old = ['customer_name' => $customerName, 'phone' => $phone, 'delivery_address' => $address, 'payment_method' => $paymentChoice];
+
+    $paymentMethod = (string)$paymentChoice;
     $paymentReceipt = null;
     $paymentStatus = 'unpaid';
-
-    $isGcash = (strpos(strtolower($paymentMethod), 'gcash') !== false || strpos(strtolower($paymentMethod), 'wallet') !== false || strpos(strtolower($paymentMethod), 'e-wallet') !== false);
-    $isCard = (strpos(strtolower($paymentMethod), 'card') !== false || strpos(strtolower($paymentMethod), 'credit') !== false);
+    $isGcash = $paymentChoice === 'E-Wallet / GCash';
+    $isCard = $paymentChoice === 'Credit / Debit Card';
+    $receiptCheck = null;
 
     if ($isGcash) {
         $paymentStatus = 'pending_verification';
-        if (isset($_FILES['payment_receipt']) && $_FILES['payment_receipt']['error'] !== UPLOAD_ERR_NO_FILE) {
-            $receiptErr = $_FILES['payment_receipt']['error'];
-            if ($receiptErr === UPLOAD_ERR_INI_SIZE || $receiptErr === UPLOAD_ERR_FORM_SIZE) {
-                $error = 'The payment receipt image is too large. Please select a screenshot under 5MB or compress it first.';
-            } else if ($receiptErr !== UPLOAD_ERR_OK) {
-                $error = 'Failed to upload GCash receipt screenshot (Error code: ' . $receiptErr . ').';
-            } else {
-                $uploadDir = __DIR__ . '/../assets/uploads/receipts/';
-                if (!is_dir($uploadDir)) {
-                    @mkdir($uploadDir, 0777, true);
-                }
-                $ext = strtolower(pathinfo($_FILES['payment_receipt']['name'], PATHINFO_EXTENSION));
-                $allowed = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'avif', 'bmp', 'tiff'];
-                if (!in_array($ext, $allowed)) {
-                    $error = 'Invalid image format (.' . htmlspecialchars($ext) . ') for GCash receipt. Accepted formats: PNG, JPG, WebP, HEIC.';
-                } else {
-                    $filename = 'gcash_' . time() . '_' . uniqid() . '.' . $ext;
-                    $targetFile = $uploadDir . $filename;
-                    if (move_uploaded_file($_FILES['payment_receipt']['tmp_name'], $targetFile)) {
-                        @chmod($targetFile, 0666);
-                        $paymentReceipt = 'assets/uploads/receipts/' . $filename;
-                    } else {
-                        $error = 'Failed to save GCash receipt screenshot. Please check write permissions for assets/uploads/receipts/';
-                    }
-                }
-            }
-        } else {
-            $error = 'Please upload a screenshot of your GCash payment receipt.';
+        $receiptCheck = checkImageUpload('payment_receipt', allowedImageTypes(false), UPLOAD_MAX_BYTES, true);
+        if ($receiptCheck['error'] !== null) {
+            $v->addError('payment_receipt', $receiptCheck['error'] === MSG_REQUIRED
+                ? 'Please upload a screenshot of your GCash payment receipt.'
+                : $receiptCheck['error']);
         }
     } elseif ($isCard) {
-        $cardName = sanitize($_POST['card_name'] ?? '');
-        $cardNumber = preg_replace('/\s+/', '', sanitize($_POST['card_number'] ?? ''));
-        $cardExpiry = sanitize($_POST['card_expiry'] ?? '');
-        $cardCvv = sanitize($_POST['card_cvv'] ?? '');
-
-        if (empty($cardName) || strlen($cardNumber) < 13 || empty($cardExpiry) || strlen($cardCvv) < 3) {
-            $error = 'Please enter valid Credit/Debit Card details (Cardholder Name, 16-digit Card Number, Expiry MM/YY, and CVV).';
-        } else {
+        $cardName = $v->personName('card_name', ['patternMessage' => 'Please enter the cardholder name as shown on the card.']);
+        $cardNumber = preg_replace('/[\s-]+/', '', $v->text('card_number', ['required' => true, 'max' => 23]));
+        if (!$v->hasError('card_number') && !isValidCardNumber($cardNumber)) {
+            $v->addError('card_number', 'Please enter a valid card number (13 to 19 digits).');
+        }
+        $cardExpiry = $v->text('card_expiry', ['required' => true, 'max' => 5]);
+        if (!$v->hasError('card_expiry')) {
+            if (!preg_match('/^(0[1-9]|1[0-2])\/(\d{2})$/', $cardExpiry, $m)) {
+                $v->addError('card_expiry', 'Please enter a valid expiry date in MM/YY format.');
+            } elseif (mktime(0, 0, 0, (int)$m[1] + 1, 1, 2000 + (int)$m[2]) <= time()) {
+                $v->addError('card_expiry', 'This card has expired. Please use a different card.');
+            }
+        }
+        $cardCvv = $v->text('card_cvv', ['required' => true, 'max' => 4]);
+        if (!$v->hasError('card_cvv') && !preg_match('/^\d{3,4}$/', $cardCvv)) {
+            $v->addError('card_cvv', 'Please enter the 3- or 4-digit security code (CVV).');
+        }
+        $old['card_name'] = $cardName;
+        if (!$v->fails()) {
             $paymentStatus = 'paid';
-            $last4 = substr($cardNumber, -4);
-            $paymentMethod = "Card (ending in $last4)";
+            $paymentMethod = 'Card (ending in ' . substr($cardNumber, -4) . ')';
         }
     }
 
-    if (empty($customerName) || empty($phone) || empty($address)) {
-        $error = 'Please complete your order details (Name, Phone, and Delivery Address).';
+    $errors = $v->errors();
+
+    if ($errors) {
+        $error = MSG_FORM_ERRORS;
+        http_response_code(422);
+    } elseif (!consumeFormToken('checkout', $_POST['form_token'] ?? '')) {
+        // Same checkout form submitted twice (double click / refresh): never create a second order
+        if (!empty($_SESSION['latest_order'])) {
+            header("Location: success.php", true, 303);
+            exit;
+        }
+        setFlash('error', MSG_DUPLICATE . ' Please check Track Orders before trying again.');
+        header("Location: orders.php", true, 303);
+        exit;
     }
 
-    if (empty($error)) {
+    if (empty($errors)) {
         // Re-check eligibility against the latest purchase history before placing the order
         $loyalty = getLoyaltyStatus($db, (int)($_SESSION['user_id'] ?? 0), $loyaltyMinPurchases);
-        $applyLoyaltyDiscount = $loyalty['eligible'] && (($_POST['apply_loyalty_discount'] ?? '1') === '1');
+        $applyLoyaltyDiscount = $loyalty['eligible'] && ($discountChoice ?? '1') === '1';
 
+        // All amounts are calculated on the server from database prices and settings
         // Only one discount per order: the Loyal Customer Discount (no other promotions are combined)
         $discountAmount = $applyLoyaltyDiscount ? round($subtotal * ($loyaltyDiscountRate / 100), 2) : 0;
         $discountedSubtotal = $subtotal - $discountAmount;
-        $taxAmount = $discountedSubtotal * ($taxRate / 100);
-        $totalAmount = $discountedSubtotal + $taxAmount + $shippingCost;
+        $taxAmount = round($discountedSubtotal * ($taxRate / 100), 2);
+        $totalAmount = round($discountedSubtotal + $taxAmount + $shippingCost, 2);
 
         try {
-            $db->beginTransaction();
-
-            $userCheck = $db->prepare("SELECT id FROM users WHERE id = ?");
-            $userCheck->execute([$_SESSION['user_id'] ?? 0]);
-            $customerId = $userCheck->fetchColumn();
-
-            if (!$customerId) {
-                $email = $_SESSION['user_email'] ?? ('customer_' . time() . '_' . rand(100, 999) . '@store.com');
-                $insUser = $db->prepare("INSERT INTO users (full_name, email, password, phone, address, role, status) VALUES (?, ?, 'customer123', ?, ?, 'customer', 'active')");
-                $insUser->execute([$customerName, $email, $phone, $address]);
-                $customerId = $db->lastInsertId();
-                $_SESSION['user_id'] = $customerId;
-                $_SESSION['user_name'] = $customerName;
-                $_SESSION['user_email'] = $email;
-                $_SESSION['user_role'] = 'customer';
+            // Save the receipt only after every other check passed
+            if ($isGcash) {
+                $paymentReceipt = storeCheckedUpload($receiptCheck, 'receipts', 'gcash');
             }
+
+            $db->beginTransaction();
+            $customerId = (int)$account['id'];
 
             $orderStmt = $db->prepare("
                 INSERT INTO orders (customer_id, customer_name, phone, delivery_address, payment_method, payment_receipt, payment_status, subtotal, discount_type, discount_amount, shipping_cost, tax_amount, total_amount, status)
@@ -214,8 +270,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $orderNum = $noStmt->fetchColumn();
 
             $itemStmt = $db->prepare("INSERT INTO order_items (order_id, product_id, product_name, quantity, price, subtotal) VALUES (?, ?, ?, ?, ?, ?)");
-            // Only deduct stock when enough units are available (prevents negative stock)
-            $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ? AND stock_quantity >= ?");
+            // Stock is re-checked inside the transaction: only deduct when enough units are available
+            $stockStmt = $db->prepare("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ? AND status = 'active' AND stock_quantity >= ?");
             $stockLeftStmt = $db->prepare("SELECT stock_quantity FROM products WHERE id = ?");
 
             foreach ($cartItems as $item) {
@@ -223,7 +279,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($stockStmt->rowCount() === 0) {
                     $stockLeftStmt->execute([$item['id']]);
                     $left = max(0, (int)$stockLeftStmt->fetchColumn());
-                    throw new Exception('Sorry, only ' . $left . ' unit(s) of "' . $item['name'] . '" are left in stock. Please update the quantity in your cart.');
+                    throw new UserFacingException('"' . $item['name'] . '": ' . msgInsufficientStock($left) . ' Please update the quantity in your cart.', 409);
                 }
                 $itemStmt->execute([$orderId, $item['id'], $item['name'], $item['quantity'], $item['price'], $item['subtotal']]);
             }
@@ -243,17 +299,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'payment_method' => $paymentMethod
             ];
 
-            header("Location: success.php");
+            header("Location: success.php", true, 303);
             exit;
 
         } catch (Exception $e) {
+            // Nothing is saved when any step fails
             if ($db->inTransaction()) {
                 $db->rollBack();
             }
-            $error = 'Failed to place order: ' . $e->getMessage();
+            deleteStoredUpload($paymentReceipt);
+            $error = 'Your order was not placed. ' . safeErrorMessage($e, 'Order placement failed');
+            http_response_code($e instanceof UserFacingException ? $e->getHttpStatus() : 500);
         }
     }
 }
+
+$selectedPayment = in_array($old['payment_method'] ?? '', $allowedPaymentMethods, true) ? $old['payment_method'] : 'Cash on Delivery (COD)';
+
+// One-time token: a double click or refresh can never place the same order twice
+$checkoutToken = generateFormToken('checkout');
 
 // Values for the initial order summary (JavaScript recalculates when the discount is removed/applied)
 $loyaltyDiscountValue = $loyalty['eligible'] ? round($subtotal * ($loyaltyDiscountRate / 100), 2) : 0;
@@ -418,6 +482,8 @@ if (file_exists('includes/header.php')) {
     <?php endif; ?>
 
     <form method="POST" action="checkout.php" id="checkoutForm" enctype="multipart/form-data">
+        <?= csrfField() ?>
+        <input type="hidden" name="form_token" value="<?= htmlspecialchars($checkoutToken) ?>">
         <div style="display: flex; gap: 2rem; flex-wrap: wrap; align-items: flex-start;">
 
             <!-- Left Column: Details & Products -->
@@ -432,17 +498,20 @@ if (file_exists('includes/header.php')) {
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.25rem;">
                         <div>
                             <label class="text-muted-green" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem;">Full Name</label>
-                            <input type="text" name="customer_name" required value="<?= htmlspecialchars($_POST['customer_name'] ?? ($_SESSION['user_name'] ?? '')) ?>" class="smiski-input">
+                            <input type="text" name="customer_name" required minlength="2" maxlength="100" autocomplete="name" value="<?= oldValue($old, 'customer_name', $_SESSION['user_name'] ?? '') ?>" class="smiski-input<?= invalidClass($errors, 'customer_name') ?>"<?= invalidAttr($errors, 'customer_name') ?>>
+                            <?= fieldError($errors, 'customer_name') ?>
                         </div>
                         <div>
                             <label class="text-muted-green" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem;">Phone Number</label>
-                            <input type="text" name="phone" required value="<?= htmlspecialchars($_POST['phone'] ?? ($_SESSION['user_phone'] ?? '')) ?>" class="smiski-input">
+                            <input type="tel" name="phone" required data-phone-input inputmode="numeric" pattern="[0-9]{7,15}" maxlength="15" placeholder="09123456789" title="Numbers only (7 to 15 digits)" value="<?= oldValue($old, 'phone', $_SESSION['user_phone'] ?? '') ?>" autocomplete="tel" class="smiski-input<?= invalidClass($errors, 'phone') ?>"<?= invalidAttr($errors, 'phone') ?>>
+                            <?= fieldError($errors, 'phone') ?>
                         </div>
                     </div>
 
                     <div>
                         <label class="text-muted-green" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem;">Delivery Address</label>
-                        <textarea name="delivery_address" rows="3" required class="smiski-input" style="font-family:inherit; resize: vertical;"><?= htmlspecialchars($_POST['delivery_address'] ?? ($_SESSION['user_address'] ?? '')) ?></textarea>
+                        <textarea name="delivery_address" rows="3" required minlength="5" maxlength="500" data-counter class="smiski-input<?= invalidClass($errors, 'delivery_address') ?>"<?= invalidAttr($errors, 'delivery_address') ?> style="font-family:inherit; resize: vertical;"><?= oldValue($old, 'delivery_address', $_SESSION['user_address'] ?? '') ?></textarea>
+                        <?= fieldError($errors, 'delivery_address') ?>
                     </div>
                 </div>
 
@@ -454,7 +523,7 @@ if (file_exists('includes/header.php')) {
 
                     <div style="display: flex; flex-direction: column; gap: 0.85rem;">
                         <label class="smiski-subcard active-payment" style="display: flex; align-items: center; gap: 0.85rem; padding: 1rem 1.25rem; cursor: pointer;">
-                            <input type="radio" name="payment_method" value="Cash on Delivery (COD)" checked style="accent-color: #15803d; width:18px; height:18px;">
+                            <input type="radio" name="payment_method" value="Cash on Delivery (COD)" required <?= $selectedPayment === 'Cash on Delivery (COD)' ? 'checked' : '' ?> style="accent-color: #15803d; width:18px; height:18px;">
                             <div>
                                 <div style="font-weight: 700; font-size: 0.95rem; color: #064e3b;">Cash on Delivery (COD)</div>
                                 <div class="text-muted-green" style="font-size: 0.8rem;">Pay in cash upon doorstep delivery</div>
@@ -462,7 +531,7 @@ if (file_exists('includes/header.php')) {
                         </label>
 
                         <label class="smiski-subcard" style="display: flex; align-items: center; gap: 0.85rem; padding: 1rem 1.25rem; cursor: pointer;">
-                            <input type="radio" name="payment_method" value="E-Wallet / GCash" style="accent-color: #15803d; width:18px; height:18px;">
+                            <input type="radio" name="payment_method" value="E-Wallet / GCash" <?= $selectedPayment === 'E-Wallet / GCash' ? 'checked' : '' ?> style="accent-color: #15803d; width:18px; height:18px;">
                             <div>
                                 <div style="font-weight: 700; font-size: 0.95rem; color: #064e3b;">E-Wallet / GCash / Maya</div>
                                 <div class="text-muted-green" style="font-size: 0.8rem;">Pay via digital wallet & upload receipt screenshot</div>
@@ -470,13 +539,15 @@ if (file_exists('includes/header.php')) {
                         </label>
 
                         <label class="smiski-subcard" style="display: flex; align-items: center; gap: 0.85rem; padding: 1rem 1.25rem; cursor: pointer;">
-                            <input type="radio" name="payment_method" value="Credit / Debit Card" style="accent-color: #15803d; width:18px; height:18px;">
+                            <input type="radio" name="payment_method" value="Credit / Debit Card" <?= $selectedPayment === 'Credit / Debit Card' ? 'checked' : '' ?> style="accent-color: #15803d; width:18px; height:18px;">
                             <div>
                                 <div style="font-weight: 700; font-size: 0.95rem; color: #064e3b;">Credit / Debit Card</div>
                                 <div class="text-muted-green" style="font-size: 0.8rem;">Pay securely with Visa or Mastercard</div>
                             </div>
                         </label>
                     </div>
+
+                    <?= fieldError($errors, 'payment_method') ?>
 
                     <!-- GCash Upload Section -->
                     <div id="gcashUploadSection" class="smiski-subcard" style="display: none; padding: 1.25rem; margin-top: 1.25rem; background: rgba(240, 253, 244, 0.85) !important;">
@@ -489,7 +560,9 @@ if (file_exists('includes/header.php')) {
                         <label class="text-muted-green" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
                             Upload GCash Receipt Screenshot <span style="color:#dc2626;">*</span>
                         </label>
-                        <input type="file" name="payment_receipt" id="payment_receipt_input" accept="image/*" class="smiski-input" style="padding: 0.5rem;">
+                        <input type="file" name="payment_receipt" id="payment_receipt_input" data-required-when-shown accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/bmp,image/tiff,.heic,.heif" data-max-size="5242880" class="smiski-input<?= invalidClass($errors, 'payment_receipt') ?>"<?= invalidAttr($errors, 'payment_receipt') ?> style="padding: 0.5rem;">
+                        <?= fieldError($errors, 'payment_receipt') ?>
+                        <small class="field-hint">Accepted: JPG, PNG, WebP, HEIC, AVIF, BMP, TIFF. Maximum 5 MB.</small>
                     </div>
 
                     <!-- Card Payment Section -->
@@ -506,20 +579,24 @@ if (file_exists('includes/header.php')) {
                         <div style="display: flex; flex-direction: column; gap: 0.85rem;">
                             <div>
                                 <label class="text-muted-green" style="display: block; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.3rem;">Cardholder Name</label>
-                                <input type="text" name="card_name" placeholder="e.g. Juan Dela Cruz" class="smiski-input">
+                                <input type="text" name="card_name" data-required-when-shown minlength="2" maxlength="100" autocomplete="cc-name" placeholder="e.g. Juan Dela Cruz" value="<?= oldValue($old, 'card_name') ?>" class="smiski-input<?= invalidClass($errors, 'card_name') ?>"<?= invalidAttr($errors, 'card_name') ?>>
+                                <?= fieldError($errors, 'card_name') ?>
                             </div>
                             <div>
                                 <label class="text-muted-green" style="display: block; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.3rem;">Card Number</label>
-                                <input type="text" name="card_number" id="card_number_input" maxlength="19" placeholder="4532 •••• •••• 8901" class="smiski-input" style="letter-spacing:1px;">
+                                <input type="text" name="card_number" id="card_number_input" data-required-when-shown inputmode="numeric" autocomplete="cc-number" maxlength="19" pattern="(?:[0-9] ?){12,18}[0-9]" data-msg-pattern="Please enter a valid card number (13 to 19 digits)." placeholder="4532 •••• •••• 8901" class="smiski-input<?= invalidClass($errors, 'card_number') ?>"<?= invalidAttr($errors, 'card_number') ?> style="letter-spacing:1px;">
+                                <?= fieldError($errors, 'card_number') ?>
                             </div>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem;">
                                 <div>
                                     <label class="text-muted-green" style="display: block; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.3rem;">Expiry Date</label>
-                                    <input type="text" name="card_expiry" id="card_expiry_input" maxlength="5" placeholder="MM/YY" class="smiski-input">
+                                    <input type="text" name="card_expiry" id="card_expiry_input" data-required-when-shown inputmode="numeric" autocomplete="cc-exp" maxlength="5" pattern="(0[1-9]|1[0-2])/[0-9]{2}" data-msg-pattern="Please enter a valid expiry date in MM/YY format." placeholder="MM/YY" class="smiski-input<?= invalidClass($errors, 'card_expiry') ?>"<?= invalidAttr($errors, 'card_expiry') ?>>
+                                    <?= fieldError($errors, 'card_expiry') ?>
                                 </div>
                                 <div>
                                     <label class="text-muted-green" style="display: block; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.3rem;">CVV / CVC</label>
-                                    <input type="password" name="card_cvv" maxlength="4" placeholder="123" class="smiski-input">
+                                    <input type="password" name="card_cvv" data-required-when-shown inputmode="numeric" autocomplete="cc-csc" maxlength="4" pattern="[0-9]{3,4}" data-msg-pattern="Please enter the 3- or 4-digit security code (CVV)." placeholder="123" class="smiski-input<?= invalidClass($errors, 'card_cvv') ?>"<?= invalidAttr($errors, 'card_cvv') ?>>
+                                    <?= fieldError($errors, 'card_cvv') ?>
                                 </div>
                             </div>
                         </div>
@@ -743,6 +820,9 @@ function togglePaymentSections() {
                 gcashSection.style.display = 'none';
                 cardSection.style.display = 'none';
             }
+            // Receipt / card fields are only required for the payment method that uses them
+            gcashSection.querySelectorAll('[data-required-when-shown]').forEach(el => { el.required = gcashSection.style.display === 'block'; });
+            cardSection.querySelectorAll('[data-required-when-shown]').forEach(el => { el.required = cardSection.style.display === 'block'; });
         } else {
             parentLabel.classList.remove('active-payment');
         }

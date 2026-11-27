@@ -1,11 +1,8 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
@@ -14,123 +11,158 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-$message = '';
-$error = '';
+// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
+$message = getFlash('success');
+$error = getFlash('error');
+$addErrors = [];  $addOld = null;    // Add Product form
+$editErrors = []; $editOld = null;   // Edit Product form
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
+/**
+ * Validates the product fields shared by Add and Edit.
+ * Returns [values, errors, imageCheck].
+ */
+function validateProductInput(PDO $db, Validator $v, $productId = null) {
+    $values = [
+        'name'           => $v->text('name', ['required' => true, 'min' => 2, 'max' => 200]),
+        'category_id'    => $v->int('category_id', ['min' => 1, 'message' => MSG_INVALID_CHOICE, 'minMessage' => MSG_INVALID_CHOICE]),
+        'price'          => $v->money('price', ['min' => 0.01, 'max' => 1000000,
+                                'minMessage' => 'Price must be greater than zero.',
+                                'negativeMessage' => 'Price cannot be negative.',
+                                'maxMessage' => 'Price must not exceed ₱1,000,000.00.']),
+        'stock_quantity' => $v->int('stock_quantity', ['min' => 0, 'max' => 100000,
+                                'message' => 'Please enter a whole number for the stock quantity.',
+                                'minMessage' => 'Stock quantity cannot be negative.',
+                                'maxMessage' => 'Stock quantity must not exceed 100,000.']),
+        'description'    => $v->message('description', ['required' => false, 'max' => 2000]),
+    ];
 
-    function handleProductImageUpload(&$error) {
-        if (!isset($_FILES['product_image']) || $_FILES['product_image']['error'] === UPLOAD_ERR_NO_FILE) {
-            return null;
-        }
-
-        $fileErr = $_FILES['product_image']['error'];
-        if ($fileErr === UPLOAD_ERR_INI_SIZE || $fileErr === UPLOAD_ERR_FORM_SIZE) {
-            $error = 'The uploaded image file is too large. Please select an image under 5MB or compress it first.';
-            return false;
-        }
-
-        if ($fileErr !== UPLOAD_ERR_OK) {
-            $error = 'Image upload failed with error code: ' . $fileErr;
-            return false;
-        }
-
-        $uploadDir = __DIR__ . '/../assets/uploads/products/';
-        if (!is_dir($uploadDir)) {
-            if (!@mkdir($uploadDir, 0777, true)) {
-                $error = 'Failed to create upload directory. Please check permissions for assets/uploads/products/';
-                return false;
-            }
-        }
-
-        $ext = strtolower(pathinfo($_FILES['product_image']['name'], PATHINFO_EXTENSION));
-        $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'avif', 'bmp', 'tiff'];
-        if (!in_array($ext, $allowed)) {
-            $error = 'Invalid image format (.' . htmlspecialchars($ext) . '). Accepted formats: JPG, PNG, WebP, GIF, HEIC.';
-            return false;
-        }
-
-        $filename = 'prod_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetFile = $uploadDir . $filename;
-
-        if (move_uploaded_file($_FILES['product_image']['tmp_name'], $targetFile)) {
-            @chmod($targetFile, 0666);
-            return 'assets/uploads/products/' . $filename;
-        } else {
-            $error = 'Failed to save uploaded image. Please check write permissions for assets/uploads/products/';
-            return false;
+    if ($values['category_id'] !== null) {
+        $cat = $db->prepare("SELECT id FROM categories WHERE id = ?");
+        $cat->execute([$values['category_id']]);
+        if (!$cat->fetch()) {
+            $v->addError('category_id', MSG_INVALID_CHOICE);
         }
     }
 
+    // Same product name twice in one category is almost always a duplicate entry
+    if (!$v->hasError('name') && $values['category_id'] !== null) {
+        $dup = $db->prepare("SELECT id FROM products WHERE LOWER(name) = LOWER(?) AND category_id = ? AND id <> ?");
+        $dup->execute([$values['name'], $values['category_id'], $productId ?? 0]);
+        if ($dup->fetch()) {
+            $v->addError('name', 'A product with this name already exists in this category.');
+        }
+    }
+
+    $image = checkImageUpload('product_image', allowedImageTypes(true));
+    if ($image['error'] !== null) {
+        $v->addError('product_image', $image['error']);
+    }
+    return [$values, $v->errors(), $image];
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $v = new Validator($_POST);
+    $action = $v->choice('action', ['add', 'edit', 'delete'], ['message' => MSG_INVALID_OPERATION]);
+    if ($action === null) {
+        abortRequest(400, MSG_INVALID_OPERATION, 'inventory.php');
+    }
+
     if ($action === 'add') {
-        $name = sanitize($_POST['name'] ?? '');
-        $description = sanitize($_POST['description'] ?? '');
-        $categoryId = intval($_POST['category_id'] ?? 0);
-        $price = floatval($_POST['price'] ?? 0);
-        $stock = intval($_POST['stock_quantity'] ?? 0);
-
-        $imagePath = handleProductImageUpload($error);
-
-        if ($imagePath !== false) {
-            if (!empty($name) && $price >= 0) {
+        [$values, $addErrors, $image] = validateProductInput($db, $v);
+        if ($addErrors) {
+            $addOld = $values;
+            $error = 'Product not added. ' . MSG_FORM_ERRORS;
+            http_response_code(422);
+        } elseif (!consumeFormToken('product_add', $_POST['form_token'] ?? '')) {
+            setFlash('error', MSG_DUPLICATE . ' The product list below already includes it if it was saved.');
+            redirectTo('inventory.php');
+        } else {
+            $imagePath = null;
+            try {
+                if ($image['present']) {
+                    $imagePath = storeCheckedUpload($image, 'products', 'prod');
+                }
                 $stmt = $db->prepare("INSERT INTO products (name, description, category_id, price, stock_quantity, image, status) VALUES (?, ?, ?, ?, ?, ?, 'active')");
-                $stmt->execute([$name, $description, $categoryId, $price, $stock, $imagePath]);
-                logActivity($_SESSION['user_id'], 'PRODUCT_ADDED', "Added new product: $name");
-                $message = 'Product added successfully!';
-            } else if (empty($error)) {
-                $error = 'Please fill in all required product fields.';
+                $stmt->execute([$values['name'], $values['description'], $values['category_id'], $values['price'], $values['stock_quantity'], $imagePath]);
+                logActivity($_SESSION['user_id'], 'PRODUCT_ADDED', "Added new product: " . $values['name']);
+                setFlash('success', 'Product "' . $values['name'] . '" added successfully!');
+                redirectTo('inventory.php');
+            } catch (Exception $e) {
+                deleteStoredUpload($imagePath);
+                $addOld = $values;
+                $error = 'Product not added. ' . safeErrorMessage($e, 'Product insert failed');
+                http_response_code(500);
             }
+        }
+    }
+
+    if ($action === 'edit' || $action === 'delete') {
+        $id = $v->id('id');
+        if ($id === null) {
+            abortRequest(400, MSG_INVALID_OPERATION, 'inventory.php');
+        }
+        $find = $db->prepare("SELECT id, name, image FROM products WHERE id = ?");
+        $find->execute([$id]);
+        $existing = $find->fetch();
+        if (!$existing) {
+            abortRequest(404, 'This product no longer exists.', 'inventory.php');
         }
     }
 
     if ($action === 'edit') {
-        $id = intval($_POST['id'] ?? 0);
-        $name = sanitize($_POST['name'] ?? '');
-        $description = sanitize($_POST['description'] ?? '');
-        $categoryId = intval($_POST['category_id'] ?? 0);
-        $price = floatval($_POST['price'] ?? 0);
-        $stock = intval($_POST['stock_quantity'] ?? 0);
-        $status = sanitize($_POST['status'] ?? 'active');
-
-        $imagePath = handleProductImageUpload($error);
-
-        if ($imagePath !== false) {
-            if ($id > 0 && !empty($name)) {
-                if ($imagePath) {
+        [$values, $editErrors, $image] = validateProductInput($db, $v, $id);
+        $values['status'] = $v->choice('status', ['active', 'inactive']);
+        $editErrors = $v->errors();
+        if ($editErrors) {
+            $editOld = $values + ['id' => $id];
+            $error = 'Product not updated. ' . MSG_FORM_ERRORS;
+            http_response_code(422);
+        } else {
+            $imagePath = null;
+            try {
+                if ($image['present']) {
+                    $imagePath = storeCheckedUpload($image, 'products', 'prod');
                     $stmt = $db->prepare("UPDATE products SET name = ?, description = ?, category_id = ?, price = ?, stock_quantity = ?, status = ?, image = ? WHERE id = ?");
-                    $stmt->execute([$name, $description, $categoryId, $price, $stock, $status, $imagePath, $id]);
+                    $stmt->execute([$values['name'], $values['description'], $values['category_id'], $values['price'], $values['stock_quantity'], $values['status'], $imagePath, $id]);
                 } else {
                     $stmt = $db->prepare("UPDATE products SET name = ?, description = ?, category_id = ?, price = ?, stock_quantity = ?, status = ? WHERE id = ?");
-                    $stmt->execute([$name, $description, $categoryId, $price, $stock, $status, $id]);
+                    $stmt->execute([$values['name'], $values['description'], $values['category_id'], $values['price'], $values['stock_quantity'], $values['status'], $id]);
                 }
-                logActivity($_SESSION['user_id'], 'PRODUCT_UPDATED', "Updated product ID $id: $name");
-                $message = 'Product updated successfully!';
-            } else if (empty($error)) {
-                $error = 'Invalid product data.';
+                logActivity($_SESSION['user_id'], 'PRODUCT_UPDATED', "Updated product ID $id: " . $values['name']);
+                setFlash('success', 'Product "' . $values['name'] . '" updated successfully!');
+                redirectTo('inventory.php');
+            } catch (Exception $e) {
+                deleteStoredUpload($imagePath);
+                $editOld = $values + ['id' => $id];
+                $error = 'Product not updated. ' . safeErrorMessage($e, 'Product update failed');
+                http_response_code(500);
             }
         }
     }
 
     if ($action === 'delete') {
-        $id = intval($_POST['id'] ?? 0);
-        if ($id > 0) {
+        try {
             $checkStmt = $db->prepare("SELECT COUNT(*) FROM order_items WHERE product_id = ?");
             $checkStmt->execute([$id]);
             if ($checkStmt->fetchColumn() > 0) {
                 $stmt = $db->prepare("UPDATE products SET status = 'inactive' WHERE id = ?");
                 $stmt->execute([$id]);
                 logActivity($_SESSION['user_id'], 'PRODUCT_DEACTIVATED', "Deactivated product ID $id (linked to orders)");
-                $message = 'Product marked as inactive because it is linked to existing order records.';
+                setFlash('success', 'Product marked as inactive because it is linked to existing order records.');
             } else {
                 $stmt = $db->prepare("DELETE FROM products WHERE id = ?");
                 $stmt->execute([$id]);
                 logActivity($_SESSION['user_id'], 'PRODUCT_DELETED', "Deleted product ID $id");
-                $message = 'Product deleted successfully!';
+                setFlash('success', 'Product deleted successfully!');
             }
+        } catch (Exception $e) {
+            setFlash('error', 'Product not deleted. ' . safeErrorMessage($e, 'Product delete failed'));
         }
+        redirectTo('inventory.php');
     }
 }
+
+$productAddToken = generateFormToken('product_add');
 
 $categories = $db->query("SELECT * FROM categories ORDER BY name ASC")->fetchAll();
 
@@ -362,15 +394,16 @@ require_once __DIR__ . '/includes/header.php';
                                 </td>
                                 <td style="padding: 0.9rem 1rem; text-align: center; white-space: nowrap;">
                                     <div style="display: inline-flex; gap: 0.4rem;">
-                                        <button onclick='openViewModal(<?= json_encode($p) ?>)' class="btn-action-view" title="View product details">
+                                        <button type="button" onclick='openViewModal(<?= jsonAttr($p) ?>)' class="btn-action-view" title="View product details">
                                             <i class="fa-solid fa-eye"></i> View
                                         </button>
-                                        <button onclick='openEditModal(<?= json_encode($p) ?>)' class="btn-action-edit" title="Edit product">
+                                        <button type="button" onclick='openEditModal(<?= jsonAttr($p) ?>)' class="btn-action-edit" title="Edit product">
                                             <i class="fa-solid fa-pen-to-square"></i> Edit
                                         </button>
                                         <form method="POST" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete or deactivate this product?')">
+                                            <?= csrfField() ?>
                                             <input type="hidden" name="action" value="delete">
-                                            <input type="hidden" name="id" value="<?= $p['id'] ?>">
+                                            <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
                                             <button type="submit" class="btn-action-delete" title="Delete product">
                                                 <i class="fa-solid fa-trash"></i> Delete
                                             </button>
@@ -391,43 +424,51 @@ require_once __DIR__ . '/includes/header.php';
         <button onclick="closeAddModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
         <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem;">Add New Product</h3>
 
-        <form method="POST" enctype="multipart/form-data">
+        <form method="POST" enctype="multipart/form-data" id="addProductForm">
+            <?= csrfField() ?>
             <input type="hidden" name="action" value="add">
+            <input type="hidden" name="form_token" value="<?= htmlspecialchars($productAddToken) ?>">
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Product Name</label>
-                <input type="text" name="name" required class="smiski-input">
+                <input type="text" name="name" required minlength="2" maxlength="200" value="<?= oldValue($addOld ?? [], 'name') ?>" class="smiski-input<?= invalidClass($addErrors, 'name') ?>"<?= invalidAttr($addErrors, 'name') ?>>
+                <?= fieldError($addErrors, 'name') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Category</label>
-                <select name="category_id" class="smiski-select">
+                <select name="category_id" required class="smiski-select<?= invalidClass($addErrors, 'category_id') ?>">
                     <?php foreach ($categories as $c): ?>
-                        <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
+                        <option value="<?= (int)$c['id'] ?>" <?= (int)($addOld['category_id'] ?? 0) === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
+                <?= fieldError($addErrors, 'category_id') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Product Image</label>
-                <input type="file" name="product_image" accept="image/*" class="smiski-file">
-                <p class="text-muted-green" style="font-size: 0.75rem; margin-top: 0.25rem;">Accepted: JPG, PNG, GIF, WebP. Max recommended: 2MB.</p>
+                <input type="file" name="product_image" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,image/avif,image/bmp,image/tiff,.heic,.heif" data-max-size="5242880" class="smiski-file<?= invalidClass($addErrors, 'product_image') ?>">
+                <?= fieldError($addErrors, 'product_image') ?>
+                <p class="text-muted-green" style="font-size: 0.75rem; margin-top: 0.25rem;">Accepted: JPG, PNG, GIF, WebP, HEIC, AVIF, BMP, TIFF. Maximum 5 MB.</p>
             </div>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
                 <div>
                     <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Price (₱)</label>
-                    <input type="number" step="0.01" name="price" required class="smiski-input">
+                    <input type="number" step="0.01" min="0.01" max="1000000" name="price" required data-msg-min="Price must be greater than zero." data-msg-max="Price must not exceed ₱1,000,000.00." value="<?= oldValue($addOld ?? [], 'price') ?>" class="smiski-input<?= invalidClass($addErrors, 'price') ?>"<?= invalidAttr($addErrors, 'price') ?>>
+                    <?= fieldError($addErrors, 'price') ?>
                 </div>
                 <div>
                     <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Stock Quantity</label>
-                    <input type="number" name="stock_quantity" required value="10" class="smiski-input">
+                    <input type="number" step="1" min="0" max="100000" name="stock_quantity" required data-msg-min="Stock quantity cannot be negative." data-msg-number="Please enter a whole number for the stock quantity." data-msg-max="Stock quantity must not exceed 100,000." value="<?= oldValue($addOld ?? [], 'stock_quantity', '10') ?>" class="smiski-input<?= invalidClass($addErrors, 'stock_quantity') ?>"<?= invalidAttr($addErrors, 'stock_quantity') ?>>
+                    <?= fieldError($addErrors, 'stock_quantity') ?>
                 </div>
             </div>
 
             <div style="margin-bottom: 1.5rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Description</label>
-                <textarea name="description" rows="3" class="smiski-textarea"></textarea>
+                <textarea name="description" rows="3" maxlength="2000" data-counter class="smiski-textarea<?= invalidClass($addErrors, 'description') ?>"<?= invalidAttr($addErrors, 'description') ?>><?= oldValue($addOld ?? [], 'description') ?></textarea>
+                <?= fieldError($addErrors, 'description') ?>
             </div>
 
             <button type="submit" class="btn-green-glow" style="width: 100%; padding: 0.75rem; font-size: 0.95rem; font-weight: 700; border-radius: 12px;">Add Product</button>
@@ -440,45 +481,51 @@ require_once __DIR__ . '/includes/header.php';
         <button onclick="closeEditModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
         <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem;">Edit Product</h3>
 
-        <form method="POST" enctype="multipart/form-data">
+        <form method="POST" enctype="multipart/form-data" id="editProductForm">
+            <?= csrfField() ?>
             <input type="hidden" name="action" value="edit">
             <input type="hidden" name="id" id="edit_id">
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Product Name</label>
-                <input type="text" name="name" id="edit_name" required class="smiski-input">
+                <input type="text" name="name" id="edit_name" required minlength="2" maxlength="200" class="smiski-input<?= invalidClass($editErrors, 'name') ?>"<?= invalidAttr($editErrors, 'name') ?>>
+                <?= fieldError($editErrors, 'name') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Category</label>
-                <select name="category_id" id="edit_category_id" class="smiski-select">
+                <select name="category_id" id="edit_category_id" required class="smiski-select<?= invalidClass($editErrors, 'category_id') ?>">
                     <?php foreach ($categories as $c): ?>
                         <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
+                <?= fieldError($editErrors, 'category_id') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Product Image</label>
                 <div id="edit_image_preview" style="margin-bottom: 0.5rem;"></div>
-                <input type="file" name="product_image" accept="image/*" class="smiski-file">
-                <p class="text-muted-green" style="font-size: 0.75rem; margin-top: 0.25rem;">Leave empty to keep current image. Upload new to replace.</p>
+                <input type="file" name="product_image" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,image/avif,image/bmp,image/tiff,.heic,.heif" data-max-size="5242880" class="smiski-file<?= invalidClass($editErrors, 'product_image') ?>">
+                <?= fieldError($editErrors, 'product_image') ?>
+                <p class="text-muted-green" style="font-size: 0.75rem; margin-top: 0.25rem;">Leave empty to keep current image. Upload new to replace (JPG, PNG, GIF, WebP, HEIC, AVIF, BMP, TIFF; max 5 MB).</p>
             </div>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
                 <div>
                     <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Price (₱)</label>
-                    <input type="number" step="0.01" name="price" id="edit_price" required class="smiski-input">
+                    <input type="number" step="0.01" min="0.01" max="1000000" name="price" id="edit_price" required data-msg-min="Price must be greater than zero." data-msg-max="Price must not exceed ₱1,000,000.00." class="smiski-input<?= invalidClass($editErrors, 'price') ?>"<?= invalidAttr($editErrors, 'price') ?>>
+                    <?= fieldError($editErrors, 'price') ?>
                 </div>
                 <div>
                     <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Stock Quantity</label>
-                    <input type="number" name="stock_quantity" id="edit_stock" required class="smiski-input">
+                    <input type="number" step="1" min="0" max="100000" name="stock_quantity" id="edit_stock" required data-msg-min="Stock quantity cannot be negative." data-msg-number="Please enter a whole number for the stock quantity." data-msg-max="Stock quantity must not exceed 100,000." class="smiski-input<?= invalidClass($editErrors, 'stock_quantity') ?>"<?= invalidAttr($editErrors, 'stock_quantity') ?>>
+                    <?= fieldError($editErrors, 'stock_quantity') ?>
                 </div>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Status</label>
-                <select name="status" id="edit_status" class="smiski-select">
+                <select name="status" id="edit_status" required class="smiski-select<?= invalidClass($editErrors, 'status') ?>">
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                 </select>
@@ -486,7 +533,8 @@ require_once __DIR__ . '/includes/header.php';
 
             <div style="margin-bottom: 1.5rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Description</label>
-                <textarea name="description" id="edit_description" rows="3" class="smiski-textarea"></textarea>
+                <textarea name="description" id="edit_description" rows="3" maxlength="2000" data-counter class="smiski-textarea<?= invalidClass($editErrors, 'description') ?>"<?= invalidAttr($editErrors, 'description') ?>></textarea>
+                <?= fieldError($editErrors, 'description') ?>
             </div>
 
             <button type="submit" class="btn-green-glow" style="width: 100%; padding: 0.75rem; font-size: 0.95rem; font-weight: 700; border-radius: 12px;">Save Changes</button>
@@ -516,7 +564,9 @@ require_once __DIR__ . '/includes/header.php';
 function openAddModal() { document.getElementById('addModal').style.display = 'flex'; }
 function closeAddModal() { document.getElementById('addModal').style.display = 'none'; }
 
-function openEditModal(p) {
+function openEditModal(p, keepErrors) {
+    // Opening the form for a (different) product clears old validation messages
+    if (!keepErrors && window.FormValidation) FormValidation.clearErrors(document.getElementById('editProductForm'));
     document.getElementById('edit_id').value = p.id;
     document.getElementById('edit_name').value = p.name;
     document.getElementById('edit_category_id').value = p.category_id;
@@ -552,6 +602,16 @@ function openViewModal(p) {
     document.getElementById('viewModal').style.display = 'flex';
 }
 function closeViewModal() { document.getElementById('viewModal').style.display = 'none'; }
+<?php if ($addOld !== null): ?>
+// The last "Add Product" failed validation: show the form again with the entered values and errors
+document.addEventListener('DOMContentLoaded', openAddModal);
+<?php endif; ?>
+<?php if ($editOld !== null): ?>
+// The last edit failed validation: show the form again with the entered values and errors
+document.addEventListener('DOMContentLoaded', function () {
+    openEditModal(<?= json_encode($editOld + ['image' => $existing['image'] ?? null], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, true);
+});
+<?php endif; ?>
 </script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

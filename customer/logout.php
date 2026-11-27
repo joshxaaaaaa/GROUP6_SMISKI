@@ -41,6 +41,7 @@ if (!$confirmed) {
         <i class="fa-solid fa-right-from-bracket" style="font-size: 2rem; color: #15803d; margin-bottom: 1rem;"></i>
         <h2>Are you sure you want to log out?</h2>
         <form method="POST" action="logout.php" class="row">
+            <?= csrfField() ?>
             <input type="hidden" name="confirm_logout" value="1">
             <a href="<?= htmlspecialchars($cancelUrl) ?>" class="btn btn-cancel">Cancel</a>
             <button type="submit" class="btn btn-confirm">Confirm</button>

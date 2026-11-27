@@ -14,6 +14,8 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
     <title>Admin Portal - E-Commerce Store</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="../assets/css/form-feedback.css">
+    <script src="../assets/js/form-validation.js" defer></script>
     <style>
         :root {
             --primary: #22c55e;          /* Vibrant Green */
@@ -602,6 +604,7 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
             <i class="fa-solid fa-right-from-bracket" style="font-size: 1.8rem; color: #15803d; margin-bottom: 0.85rem;"></i>
             <h3 id="logoutConfirmTitle">Are you sure you want to log out?</h3>
             <form method="POST" action="logout.php" class="logout-confirm-actions">
+                <?= csrfField() ?>
                 <input type="hidden" name="confirm_logout" value="1">
                 <button type="button" class="logout-confirm-cancel" onclick="closeLogoutConfirm()">Cancel</button>
                 <button type="submit" class="logout-confirm-ok">Confirm</button>
@@ -662,6 +665,17 @@ if (!isAdminLoggedIn() && basename($_SERVER['PHP_SELF']) !== 'login.php') {
         </header>
 
         <div class="admin-content">
+<?php
+    // Notices set with setFlash() that the page itself did not display
+    $adminFlashSuccess = getFlash('success');
+    $adminFlashError = getFlash('error');
+    if ($adminFlashSuccess !== '' || $adminFlashError !== ''):
+?>
+            <div style="max-width: 1400px; margin: 1.5rem auto 0; padding: 0 1rem;">
+                <?= alertBox('success', $adminFlashSuccess) ?>
+                <?= alertBox('error', $adminFlashError) ?>
+            </div>
+<?php endif; ?>
 <?php else: ?>
 <div class="admin-main-login">
 <?php endif; ?>

@@ -1,28 +1,49 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
-$error = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = sanitize($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
+if (isAdminLoggedIn()) {
+    header("Location: index.php");
+    exit;
+}
 
-    if (empty($email) || empty($password)) {
-        $error = 'Please enter both email and password.';
+$error = getFlash('error');   // e.g. expired form or session
+$errors = [];
+$old = ['email' => 'admin@admin.com'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $v = new Validator($_POST);
+    $email = $v->email('email');
+    $password = $v->loginPassword('password');
+    $errors = $v->errors();
+    $old = ['email' => $email];
+
+    if (isLoginThrottled()) {
+        $error = msgLoginThrottled();
+        $errors = [];
+        http_response_code(429);
+    } elseif ($errors) {
+        $error = MSG_FORM_ERRORS;
+        http_response_code(422);
     } else {
         $db = getDB();
         $stmt = $db->prepare("SELECT * FROM users WHERE email = ? AND role = 'admin' AND status = 'active'");
         $stmt->execute([$email]);
         $user = $stmt->fetch();
 
-        if ($user && (password_verify($password, $user['password']) || $password === $user['password'])) {
-            session_regenerate_id(true);
+        // Seeded admin accounts may still store a plain-text password: accept it once, then hash it
+        $isHashed = $user && password_get_info($user['password'])['algo'] !== null && password_get_info($user['password'])['algo'] !== 0;
+        $valid = $user && ($isHashed
+            ? password_verify($password, $user['password'])
+            : hash_equals((string)$user['password'], $password));
+
+        if ($valid) {
+            if (!$isHashed || password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                $db->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([password_hash($password, PASSWORD_DEFAULT), $user['id']]);
+            }
+            regenerateSessionAfterLogin();
 
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['user_name'] = $user['full_name'];
@@ -31,10 +52,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             logActivity($user['id'], 'ADMIN_LOGIN', 'Admin logged in: ' . $user['email']);
 
-            header("Location: index.php");
+            setFlash('success', 'Welcome back, ' . $user['full_name'] . '!');
+            header("Location: index.php", true, 303);
             exit;
         } else {
-            $error = 'Invalid admin credentials.';
+            recordFailedLogin($email, 'admin');
+            $error = MSG_LOGIN_FAILED;
+            http_response_code(401);
         }
     }
 }
@@ -133,21 +157,24 @@ require_once __DIR__ . '/includes/header.php';
         <?php endif; ?>
 
         <form method="POST" action="login.php">
+            <?= csrfField() ?>
             <div style="margin-bottom: 1.25rem;">
-                <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem; color: #1f2937;">Admin Email</label>
-                <input type="email" name="email" required placeholder="admin@admin.com" value="<?= htmlspecialchars($_POST['email'] ?? 'admin@admin.com') ?>"
-                       class="input-control-admin">
+                <label for="adminEmail" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem; color: #1f2937;">Admin Email</label>
+                <input type="email" id="adminEmail" name="email" required maxlength="100" autocomplete="username" placeholder="admin@admin.com" value="<?= oldValue($old, 'email') ?>"
+                       class="input-control-admin<?= invalidClass($errors, 'email') ?>"<?= invalidAttr($errors, 'email') ?>>
+                <?= fieldError($errors, 'email') ?>
             </div>
 
             <div style="margin-bottom: 1.5rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.4rem; color: #1f2937;">Password</label>
                 <div style="position: relative;">
-                    <input type="password" id="adminPassword" name="password" required placeholder="••••••••" value="admin123"
-                           class="input-control-admin" style="padding-right: 2.5rem;">
+                    <input type="password" id="adminPassword" name="password" required autocomplete="current-password" placeholder="••••••••"
+                           class="input-control-admin<?= invalidClass($errors, 'password') ?>"<?= invalidAttr($errors, 'password') ?> style="padding-right: 2.5rem;">
                     <button type="button" onclick="togglePassword('adminPassword', 'adminToggleIcon')" style="position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #4b5563; font-size: 1rem;" title="Show/Hide Password" onmouseover="this.style.color='#15803d'" onmouseout="this.style.color='#4b5563'">
                         <i id="adminToggleIcon" class="fa-solid fa-eye"></i>
                     </button>
                 </div>
+                <?= fieldError($errors, 'password') ?>
             </div>
 
             <button type="submit" class="btn-green-glow" style="width: 100%; padding: 0.85rem; font-size: 1rem; border-radius: 14px; font-weight: 600; cursor: pointer;">

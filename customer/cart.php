@@ -1,11 +1,8 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isset($_SESSION['cart'])) {
@@ -15,12 +12,32 @@ if (!isset($_SESSION['cart'])) {
 // Load the customer's saved cart (persists across logout / re-login)
 syncCustomerCart();
 
-$action = $_GET['action'] ?? '';
-$id = intval($_GET['id'] ?? 0);
+/* ---- Request validation ---- */
+$allowedActions = ['add', 'buy_now', 'reduce', 'remove'];
+$rawAction = $_GET['action'] ?? '';
+$action = is_string($rawAction) ? $rawAction : '';
+$rawId = $_GET['id'] ?? '';
+$id = (is_string($rawId) && ctype_digit($rawId)) ? (int)$rawId : 0;
+$isAjax = isAjaxRequest();
 
-if (function_exists('isAdminLoggedIn') && isAdminLoggedIn() && !empty($action)) {
-    header("Location: index.php");
-    exit;
+if ($action !== '') {
+    if (!in_array($action, $allowedActions, true) || $id < 1) {
+        abortRequest(400, MSG_INVALID_OPERATION, 'cart.php');
+    }
+    if (isAdminLoggedIn()) {
+        abortRequest(403, MSG_UNAUTHORIZED . ' Shopping is disabled in Admin mode.', 'index.php');
+    }
+    // Cart changes come from links / AJAX, so the CSRF token travels in the URL
+    requireCsrfFromQuery('cart.php');
+}
+
+// Remove malformed entries (e.g. from an old session) so counts stay accurate
+foreach ($_SESSION['cart'] as $cartKey => $cartQty) {
+    if (!is_int($cartKey) && !ctype_digit((string)$cartKey) || (int)$cartQty < 1) {
+        unset($_SESSION['cart'][$cartKey]);
+    } else {
+        $_SESSION['cart'][$cartKey] = (int)$cartQty;
+    }
 }
 
 $cartError = $_SESSION['cart_error'] ?? '';
@@ -28,94 +45,99 @@ unset($_SESSION['cart_error']);
 
 /**
  * Checks if one more unit of a product can be added to the cart.
- * Returns an error message, or '' when the item can be added.
+ * Returns [httpStatus, message]; status 200 means the item can be added.
  */
-function cartAddError($productId) {
+function cartAddCheck($productId) {
     $stmt = getDB()->prepare("SELECT name, stock_quantity FROM products WHERE id = ? AND status = 'active'");
     $stmt->execute([$productId]);
     $product = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$product) {
-        return 'This product is no longer available.';
+        return [404, 'Sorry, this product could not be found or is no longer available.'];
     }
     $stock = (int)$product['stock_quantity'];
     $inCart = (int)($_SESSION['cart'][$productId] ?? 0);
     if ($stock <= 0) {
-        return '"' . $product['name'] . '" is currently out of stock.';
+        return [409, '"' . $product['name'] . '" is currently out of stock.'];
     }
     if ($inCart + 1 > $stock) {
-        return 'Only ' . $stock . ' unit(s) of "' . $product['name'] . '" are available, and you already have ' . $inCart . ' in your cart.';
+        return [409, msgInsufficientStock($stock) . ' You already have ' . $inCart . ' in your cart.'];
     }
-    return '';
+    return [200, ''];
 }
 
-if ($action === 'add' && $id > 0) {
-    $addError = cartAddError($id);
-    if ($addError === '') {
+if ($action === 'add') {
+    [$status, $addError] = cartAddCheck($id);
+    if ($status === 200) {
         $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
         persistCart();
     }
     $totalCount = array_sum($_SESSION['cart']);
 
-    if (isset($_GET['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest')) {
-        header('Content-Type: application/json');
-        echo json_encode([
-            'success' => $addError === '',
+    if ($isAjax) {
+        jsonResponse($status, [
+            'success'   => $status === 200,
             'cartCount' => $totalCount,
-            'message' => $addError === '' ? 'Item added to cart!' : $addError
+            'message'   => $status === 200 ? 'Item added to cart!' : $addError,
         ]);
-        exit;
     }
 
-    if ($addError !== '') {
+    if ($status !== 200) {
         $_SESSION['cart_error'] = $addError;
     }
-    $referer = $_SERVER['HTTP_REFERER'] ?? 'index.php';
-    header("Location: $referer");
+    header("Location: " . safeRedirectTarget('cart.php'), true, 303);
     exit;
 }
 
-if ($action === 'buy_now' && $id > 0) {
-    $addError = cartAddError($id);
-    if ($addError === '') {
+if ($action === 'buy_now') {
+    [$status, $addError] = cartAddCheck($id);
+    if ($status === 200) {
         $_SESSION['cart'][$id] = ($_SESSION['cart'][$id] ?? 0) + 1;
         persistCart();
     } elseif (empty($_SESSION['cart'][$id])) {
         // Nothing of this product in the cart and it can't be added
         $_SESSION['cart_error'] = $addError;
-        header("Location: cart.php");
+        header("Location: cart.php", true, 303);
         exit;
     }
     if (function_exists('isCustomerLoggedIn') && !isCustomerLoggedIn()) {
         $_SESSION['redirect_after_login'] = 'checkout.php';
         $_SESSION['login_prompt'] = 'Please log in or sign up to complete your checkout.';
-        header("Location: login.php");
+        header("Location: login.php", true, 303);
     } else {
-        header("Location: checkout.php");
+        header("Location: checkout.php", true, 303);
     }
     exit;
 }
 
-if ($action === 'reduce' && $id > 0) {
+if ($action === 'reduce') {
     if (isset($_SESSION['cart'][$id])) {
         $_SESSION['cart'][$id]--;
         if ($_SESSION['cart'][$id] <= 0) {
             unset($_SESSION['cart'][$id]);
         }
         persistCart();
+    } else {
+        $_SESSION['cart_error'] = 'This item is no longer in your cart.';
     }
-    header("Location: cart.php");
+    header("Location: cart.php", true, 303);
     exit;
 }
 
-if ($action === 'remove' && $id > 0) {
-    unset($_SESSION['cart'][$id]);
-    persistCart();
-    header("Location: cart.php");
+if ($action === 'remove') {
+    if (isset($_SESSION['cart'][$id])) {
+        unset($_SESSION['cart'][$id]);
+        persistCart();
+        setFlash('success', 'Item removed from your cart.');
+    } else {
+        $_SESSION['cart_error'] = 'This item is no longer in your cart.';
+    }
+    header("Location: cart.php", true, 303);
     exit;
 }
 
 $cartItems = [];
 $subtotal = 0;
+$cartHasIssues = false;
 
 if (!empty($_SESSION['cart'])) {
     $db = getDB();
@@ -125,10 +147,30 @@ if (!empty($_SESSION['cart'])) {
     $stmt->execute($productIds);
     $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+    $foundIds = array_map('intval', array_column($products, 'id'));
+    foreach ($productIds as $cartProductId) {
+        if (!in_array((int)$cartProductId, $foundIds, true)) {
+            // Product was deleted: drop it from the cart
+            unset($_SESSION['cart'][$cartProductId]);
+            persistCart();
+        }
+    }
+
     foreach ($products as $p) {
         $qty = $_SESSION['cart'][$p['id']];
         $itemSubtotal = $p['price'] * $qty;
         $subtotal += $itemSubtotal;
+
+        // Stock / availability may have changed since the item was added
+        $issue = '';
+        if (($p['status'] ?? 'active') !== 'active') {
+            $issue = 'This product is no longer available. Please remove it from your cart.';
+        } elseif ($qty > (int)$p['stock_quantity']) {
+            $issue = msgInsufficientStock($p['stock_quantity']) . ' Please reduce the quantity.';
+        }
+        if ($issue !== '') {
+            $cartHasIssues = true;
+        }
 
         $cartItems[] = [
             'id' => $p['id'],
@@ -136,7 +178,8 @@ if (!empty($_SESSION['cart'])) {
             'price' => $p['price'],
             'stock' => $p['stock_quantity'] ?? 0,
             'quantity' => $qty,
-            'subtotal' => $itemSubtotal
+            'subtotal' => $itemSubtotal,
+            'issue' => $issue
         ];
     }
 }
@@ -304,6 +347,9 @@ if (file_exists('includes/header.php')) {
                                         <div>
                                             <div style="font-weight: 700; color: #064e3b; font-size: 1rem; line-height: 1.3;"><?= htmlspecialchars($item['name']) ?></div>
                                             <div style="font-size: 0.75rem; color: #166534; margin-top: 0.2rem; font-weight: 600;">In Stock: <?= $item['stock'] ?></div>
+                                            <?php if (!empty($item['issue'])): ?>
+                                                <div class="field-error"><i class="fa-solid fa-circle-exclamation"></i> <span><?= htmlspecialchars($item['issue']) ?></span></div>
+                                            <?php endif; ?>
                                         </div>
                                     </td>
                                     <td style="padding: 1rem 0.5rem; color: #1f2937; font-weight: 600;">
@@ -311,16 +357,16 @@ if (file_exists('includes/header.php')) {
                                     </td>
                                     <td style="padding: 1rem 0.5rem; text-align: center;">
                                         <div class="smiski-subcard" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.5rem;">
-                                            <a href="cart.php?action=reduce&id=<?= $item['id'] ?>" style="color: #15803d; text-decoration: none; font-weight: 700; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.8); border-radius: 8px; border: 1px solid rgba(74,222,128,0.5); transition: background 0.2s;">-</a>
+                                            <a href="cart.php?action=reduce&id=<?= (int)$item['id'] ?>&<?= csrfQuery() ?>" title="Decrease quantity" style="color: #15803d; text-decoration: none; font-weight: 700; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.8); border-radius: 8px; border: 1px solid rgba(74,222,128,0.5); transition: background 0.2s;">-</a>
                                             <span style="font-weight: 700; min-width: 24px; text-align: center; color: #064e3b; font-size: 0.95rem;"><?= $item['quantity'] ?></span>
-                                            <a href="cart.php?action=add&id=<?= $item['id'] ?>" style="color: #15803d; text-decoration: none; font-weight: 700; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.8); border-radius: 8px; border: 1px solid rgba(74,222,128,0.5); transition: background 0.2s;">+</a>
+                                            <a href="cart.php?action=add&id=<?= (int)$item['id'] ?>&<?= csrfQuery() ?>" title="Increase quantity" style="color: #15803d; text-decoration: none; font-weight: 700; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.8); border-radius: 8px; border: 1px solid rgba(74,222,128,0.5); transition: background 0.2s;">+</a>
                                         </div>
                                     </td>
                                     <td style="padding: 1rem 0.5rem; font-weight: 700; color: #15803d; text-align: right;">
                                         ₱<?= number_format($item['subtotal'], 2) ?>
                                     </td>
                                     <td style="padding: 1rem 0.5rem; text-align: center;">
-                                        <a href="cart.php?action=remove&id=<?= $item['id'] ?>" style="color: #dc2626; font-size: 1.1rem; padding: 0.5rem; display: inline-block; transition: transform 0.2s;" title="Remove item">
+                                        <a href="cart.php?action=remove&id=<?= (int)$item['id'] ?>&<?= csrfQuery() ?>" onclick="return confirm('Remove this item from your cart?')" style="color: #dc2626; font-size: 1.1rem; padding: 0.5rem; display: inline-block; transition: transform 0.2s;" title="Remove item">
                                             <i class="fa-solid fa-trash-can"></i>
                                         </a>
                                     </td>
@@ -348,6 +394,11 @@ if (file_exists('includes/header.php')) {
                     <button disabled class="btn-green-secondary" style="width: 100%; cursor: not-allowed; opacity: 0.6; justify-content: center;" title="Checkout disabled in Admin mode">
                         <i class="fa-solid fa-ban"></i> Checkout Disabled for Admin
                     </button>
+                <?php elseif ($cartHasIssues): ?>
+                    <button disabled class="btn-green-secondary" style="width: 100%; cursor: not-allowed; opacity: 0.6; justify-content: center;" title="Fix the highlighted items first">
+                        <i class="fa-solid fa-triangle-exclamation"></i> Update Your Cart to Continue
+                    </button>
+                    <div class="field-error" style="justify-content: center; margin-top: 0.75rem;"><i class="fa-solid fa-circle-exclamation"></i> <span>Some items exceed available stock or are no longer available. Please adjust them before checking out.</span></div>
                 <?php else: ?>
                     <a href="checkout.php" class="btn-green-primary" style="width: 100%; justify-content: center; text-decoration: none;">
                         <i class="fa-solid fa-circle-check"></i> Proceed to Check Out

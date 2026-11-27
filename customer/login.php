@@ -1,22 +1,30 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
-$error = '';
+$error = getFlash('error');   // e.g. expired form
 $prompt = $_SESSION['login_prompt'] ?? '';
 unset($_SESSION['login_prompt']);
+$errors = [];
+$old = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = sanitize($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
+    $v = new Validator($_POST);
+    $email = $v->email('email');
+    $password = $v->loginPassword('password');
+    $errors = $v->errors();
+    $old = ['email' => $email];
 
-    if (empty($email) || empty($password)) {
-        $error = 'Please fill in all fields.';
+    if (isLoginThrottled()) {
+        $error = msgLoginThrottled();
+        $errors = [];
+        http_response_code(429);
+    } elseif ($errors) {
+        $error = MSG_FORM_ERRORS;
+        http_response_code(422);
     } else {
         $db = getDB();
         $stmt = $db->prepare("SELECT * FROM users WHERE email = ? AND status = 'active'");
@@ -24,6 +32,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user = $stmt->fetch();
 
         if ($user && password_verify($password, $user['password'])) {
+            regenerateSessionAfterLogin();
+            if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+                $db->prepare("UPDATE users SET password = ? WHERE id = ?")->execute([password_hash($password, PASSWORD_DEFAULT), $user['id']]);
+            }
             $_SESSION['user_id'] = $user['id'];
             $_SESSION['user_name'] = $user['full_name'];
             $_SESSION['user_email'] = $user['email'];
@@ -42,13 +54,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 unset($_SESSION['cart_synced_for']);
                 syncCustomerCart();
 
+                // Only allow redirects to pages of this store (no open redirects)
                 $redirect = $_SESSION['redirect_after_login'] ?? 'index.php';
+                if (!is_string($redirect) || !preg_match('/^[a-z_]+\.php$/', $redirect)) {
+                    $redirect = 'index.php';
+                }
                 unset($_SESSION['redirect_after_login']);
+                setFlash('success', 'Welcome back, ' . $user['full_name'] . '! You are now logged in.');
                 header("Location: $redirect");
                 exit;
             }
         } else {
-            $error = 'Invalid email or password.';
+            recordFailedLogin($email, 'customer');
+            $error = MSG_LOGIN_FAILED;
+            http_response_code(401);
         }
     }
 }
@@ -61,6 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>Log In - E-Commerce Store</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="../assets/css/form-feedback.css">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Outfit', sans-serif; }
         
@@ -247,19 +267,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <?php endif; ?>
 
     <form method="POST" action="login.php">
+        <?= csrfField() ?>
         <div class="form-group">
             <label for="email">Email Address</label>
-            <input type="email" id="email" name="email" class="input-control hover-scale" required placeholder="name@example.com" value="<?= htmlspecialchars($_POST['email'] ?? '') ?>">
+            <input type="email" id="email" name="email" class="input-control hover-scale<?= invalidClass($errors, 'email') ?>"<?= invalidAttr($errors, 'email') ?> required maxlength="100" autocomplete="email" placeholder="name@example.com" value="<?= oldValue($old, 'email') ?>">
+            <?= fieldError($errors, 'email') ?>
         </div>
 
         <div class="form-group">
             <label for="password">Password</label>
             <div style="position: relative;">
-                <input type="password" id="password" name="password" class="input-control hover-scale" required placeholder="••••••••" style="padding-right: 2.5rem;">
+                <input type="password" id="password" name="password" class="input-control hover-scale<?= invalidClass($errors, 'password') ?>"<?= invalidAttr($errors, 'password') ?> required autocomplete="current-password" placeholder="••••••••" style="padding-right: 2.5rem;">
                 <button type="button" onclick="togglePassword('password', 'toggleIcon')" style="position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #4b5563; font-size: 1rem;" title="Show/Hide Password" onmouseover="this.style.color='#15803d'" onmouseout="this.style.color='#4b5563'">
                     <i id="toggleIcon" class="fa-solid fa-eye"></i>
                 </button>
             </div>
+            <?= fieldError($errors, 'password') ?>
         </div>
 
         <div style="display: flex; flex-direction: column; gap: 0.85rem; margin-top: 1.75rem; margin-bottom: 1.25rem;">
@@ -272,10 +295,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </a>
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
-            <a href="forgot_password.php" class="btn-link" style="text-decoration: none; font-weight: 500; font-size: 0.85rem;">
-                <i class="fa-solid fa-key"></i> Forgot Password?
-            </a>
+        <div style="display: flex; justify-content: flex-end; align-items: center; margin-top: 1rem;">
             <a href="../admin/login.php" class="btn-link" style="text-decoration: none; font-weight: 500; font-size: 0.85rem;">
                 <i class="fa-solid fa-user-shield"></i> Admin Portal
             </a>
@@ -283,6 +303,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </form>
 </div>
 
+<script src="../assets/js/form-validation.js"></script>
 <script>
 function togglePassword(inputId, iconId) {
     const input = document.getElementById(inputId);

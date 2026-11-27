@@ -1,28 +1,48 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 $db = getDB();
-$searchOrderNum = sanitize($_GET['order_number'] ?? '');
+
+// Order number: letters, numbers and dashes only (e.g. ORD-20261125-1234)
+$rawOrderNum = $_GET['order_number'] ?? '';
+$searchOrderNum = is_string($rawOrderNum) ? trim($rawOrderNum) : '';
+$searchError = '';
+if (!is_string($rawOrderNum) || ($searchOrderNum !== '' && !preg_match('/^[A-Za-z0-9-]{1,50}$/', $searchOrderNum))) {
+    $searchError = 'Please enter a valid order number using letters, numbers and dashes only (e.g. ORD-20261125-1234).';
+    $searchOrderNum = '';
+}
 
 $orders = [];
 $trackedOrder = null;
 $searched = false;
+$isCustomer = isset($_SESSION['user_id']) && !isAdminLoggedIn();
 
 if (!empty($searchOrderNum)) {
     $searched = true;
-    $stmt = $db->prepare("SELECT * FROM orders WHERE order_number = ? OR id = ?");
-    $stmt->execute([$searchOrderNum, intval($searchOrderNum)]);
-    $trackedOrder = $stmt->fetch();
+    if ($isCustomer) {
+        // Customers can only look up THEIR OWN orders
+        $stmt = $db->prepare("SELECT * FROM orders WHERE customer_id = ? AND (order_number = ? OR id = ?)");
+        $stmt->execute([(int)$_SESSION['user_id'], $searchOrderNum, ctype_digit($searchOrderNum) ? (int)$searchOrderNum : 0]);
+        $trackedOrder = $stmt->fetch();
+    } elseif (isAdminLoggedIn()) {
+        // Admin store preview may look up any order
+        $stmt = $db->prepare("SELECT * FROM orders WHERE order_number = ? OR id = ?");
+        $stmt->execute([$searchOrderNum, ctype_digit($searchOrderNum) ? (int)$searchOrderNum : 0]);
+        $trackedOrder = $stmt->fetch();
+    } else {
+        // Guests must log in: order details include names, phone numbers and addresses
+        $_SESSION['redirect_after_login'] = 'orders.php';
+        $_SESSION['login_prompt'] = 'Please log in to track your orders.';
+        header("Location: login.php", true, 303);
+        exit;
+    }
 }
 
-if (isset($_SESSION['user_id']) && !isAdminLoggedIn()) {
+if ($isCustomer) {
     $stmt = $db->prepare("SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC");
     $stmt->execute([$_SESSION['user_id']]);
     $orders = $stmt->fetchAll();
@@ -177,7 +197,7 @@ require_once __DIR__ . '/includes/header.php';
 
             <form method="GET" action="orders.php" style="display: flex; gap: 0.5rem; flex: 1; max-width: 420px; min-width: 260px;">
                 <div style="position: relative; flex: 1;">
-                    <input type="text" name="order_number" value="<?= htmlspecialchars($searchOrderNum) ?>" placeholder="Search Order # (e.g. ORD-...)" class="hover-scale"
+                    <input type="text" name="order_number" maxlength="50" pattern="[A-Za-z0-9\-]+" title="Letters, numbers and dashes only" value="<?= htmlspecialchars($searchOrderNum) ?>" placeholder="Search Order # (e.g. ORD-...)" class="hover-scale"
                            style="width: 100%; padding: 0.75rem 1rem 0.75rem 2.5rem; background: rgba(255, 255, 255, 0.8); border: 1px solid rgba(74, 222, 128, 0.5); border-radius: 12px; font-size: 0.9rem; outline: none; color: #1f2937; backdrop-filter: blur(10px);">
                     <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 0.95rem; top: 50%; transform: translateY(-50%); color: #15803d; font-size: 0.9rem;"></i>
                 </div>
@@ -193,6 +213,8 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     </div>
 
+    <?= alertBox('error', $searchError) ?>
+
     <?php if ($searched && !$trackedOrder): ?>
         <div class="smiski-card" style="background: rgba(254, 226, 226, 0.85) !important; border: 1px solid rgba(239, 68, 68, 0.5); color: #991b1b; padding: 1.25rem 1.5rem; border-radius: 16px; font-weight: 600; margin-bottom: 2rem; display: flex; align-items: center; gap: 0.75rem; box-shadow: 0 10px 25px rgba(0,0,0,0.2);">
             <i class="fa-solid fa-circle-exclamation" style="font-size: 1.4rem; color: #dc2626;"></i>
@@ -205,7 +227,7 @@ require_once __DIR__ . '/includes/header.php';
             <i class="fa-solid fa-receipt" style="font-size: 4rem; color: #15803d; margin-bottom: 1.25rem; filter: drop-shadow(0 0 8px rgba(74,222,128,0.6));"></i>
             <h3 class="neon-glow-text" style="font-weight: 700; font-size: 1.5rem;">No Orders Found</h3>
             <p class="text-muted-green" style="font-size: 1rem; margin-top: 0.5rem; margin-bottom: 1.75rem;">
-                <?= isset($_SESSION['user_id']) ? "You haven't placed any orders yet." : "Please log in to view your orders, or enter an Order Number above to track a package." ?>
+                <?= isset($_SESSION['user_id']) ? "You haven't placed any orders yet." : "Please log in to view and track your orders." ?>
             </p>
             <a href="index.php" class="btn btn-green-primary" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.85rem 1.75rem; border-radius: 14px; text-decoration: none; font-weight: 600;">
                 <i class="fa-solid fa-store"></i> Browse Catalog & Shop Now

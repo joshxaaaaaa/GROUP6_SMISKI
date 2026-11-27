@@ -8,39 +8,38 @@ $contactSuccess = $_SESSION['contact_flash_success'] ?? '';
 $contactError = $_SESSION['contact_flash_error'] ?? '';
 unset($_SESSION['contact_flash_success'], $_SESSION['contact_flash_error']);
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submit_contact') {
-    $name = sanitize($_POST['name'] ?? '');
-    $email = sanitize($_POST['email'] ?? '');
-    $subject = sanitize($_POST['subject'] ?? '');
-    $message = sanitize($_POST['message'] ?? '');
+// Field errors + entered values of a failed Contact Us submission (shown by includes/footer.php)
+$contactFormState = takeFormState('contact');
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submit_contact') {
     if (isAdminLoggedIn()) {
-        $_SESSION['contact_flash_error'] = 'The contact form is disabled in Admin mode.';
-    } elseif (empty($name) || empty($email) || empty($subject) || empty($message)) {
-        $_SESSION['contact_flash_error'] = 'Please fill in all fields of the Contact Us form.';
-    } elseif (!filter_var(html_entity_decode($email, ENT_QUOTES, 'UTF-8'), FILTER_VALIDATE_EMAIL)) {
-        $_SESSION['contact_flash_error'] = 'Please enter a valid email address.';
-    } elseif (!consumeFormToken('contact_form', $_POST['form_token'] ?? '')) {
-        // Same form submitted again (refresh / double click): don't save a duplicate
-        $_SESSION['contact_flash_error'] = 'This message was already submitted.';
+        $_SESSION['contact_flash_error'] = MSG_UNAUTHORIZED . ' The contact form is disabled in Admin mode.';
     } else {
-        $userId = $_SESSION['user_id'] ?? null;
-        try {
+        $accountEmail = isCustomerLoggedIn() ? ($_SESSION['user_email'] ?? null) : null;
+        [$values, $errors] = validateSupportMessage($_POST, $accountEmail);
+
+        if ($errors) {
+            setFormState('contact', $errors, $values);
+            $_SESSION['contact_flash_error'] = 'Your message was not sent. ' . MSG_FORM_ERRORS;
+        } elseif (isMessageRateLimited($values['email'])) {
+            setFormState('contact', [], $values);
+            $_SESSION['contact_flash_error'] = MSG_RATE_LIMITED;
+        } elseif (!consumeFormToken('contact_form', $_POST['form_token'] ?? '')) {
+            // Same form submitted again (refresh / double click): don't save a duplicate
+            $_SESSION['contact_flash_error'] = MSG_DUPLICATE;
+        } else {
             try {
-                $stmt = $db->prepare("INSERT INTO contact_messages (user_id, name, email, subject, message) VALUES (?, ?, ?, ?, ?)");
-                $stmt->execute([$userId, $name, $email, $subject, $message]);
+                saveSupportMessage($values);
+                $_SESSION['contact_flash_success'] = 'Thank you! Your message has been sent successfully. <a href="messages.php" style="color:#064e3b; font-weight:700; text-decoration:underline; text-shadow: 0 0 6px rgba(74,222,128,0.5);">Click here to track support replies</a>.';
             } catch (Exception $e) {
-                $stmt = $db->prepare("INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)");
-                $stmt->execute([$name, $email, $subject, $message]);
+                setFormState('contact', [], $values);
+                $_SESSION['contact_flash_error'] = safeErrorMessage($e, 'Contact form save failed');
             }
-            $_SESSION['contact_flash_success'] = 'Thank you! Your message has been sent successfully. <a href="messages.php" style="color:#064e3b; font-weight:700; text-decoration:underline; text-shadow: 0 0 6px rgba(74,222,128,0.5);">Click here to track support replies</a>.';
-        } catch (Exception $e) {
-            $_SESSION['contact_flash_error'] = 'Failed to send your message. Please try again.';
         }
     }
 
     // Redirect so refreshing the page does not resubmit the form
-    header("Location: index.php");
+    header("Location: index.php", true, 303);
     exit;
 }
 
@@ -48,18 +47,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'submi
 $catStmt = $db->query("SELECT * FROM categories WHERE status = 'active' ORDER BY LOWER(name) ASC");
 $categories = $catStmt->fetchAll();
 
-$search = sanitize($_GET['search'] ?? '');
-$selectedCategory = intval($_GET['category'] ?? 0);
-$priceSort = sanitize($_GET['price_sort'] ?? '');
-$stockStatus = sanitize($_GET['stock_status'] ?? '');
+/* ---- Search & filter parameters (invalid values are ignored and the customer is told) ---- */
+$filterNotice = '';
+$rawSearch = $_GET['search'] ?? '';
+$search = is_string($rawSearch) ? trim(preg_replace('/[\x00-\x1F\x7F]/u', '', $rawSearch)) : '';
+if (!is_string($rawSearch) || !mb_check_encoding($search, 'UTF-8')) {
+    $search = '';
+    $filterNotice = 'Your search could not be processed. Please try a different keyword.';
+} elseif (mb_strlen($search, 'UTF-8') > 100) {
+    $search = mb_substr($search, 0, 100, 'UTF-8');
+    $filterNotice = 'Search keywords are limited to 100 characters, so your search was shortened.';
+}
+
+$validCategoryIds = array_map('intval', array_column($categories, 'id'));
+$rawCategory = $_GET['category'] ?? '';
+$selectedCategory = 0;
+if (is_string($rawCategory) && $rawCategory !== '' && $rawCategory !== '0') {
+    if (ctype_digit($rawCategory) && in_array((int)$rawCategory, $validCategoryIds, true)) {
+        $selectedCategory = (int)$rawCategory;
+    } else {
+        $filterNotice = 'The selected category does not exist, so all categories are shown.';
+    }
+}
+
+$rawPriceSort = $_GET['price_sort'] ?? '';
+$priceSort = (is_string($rawPriceSort) && in_array($rawPriceSort, ['', 'low_high', 'high_low'], true)) ? $rawPriceSort : '';
+$rawStockStatus = $_GET['stock_status'] ?? '';
+$stockStatus = (is_string($rawStockStatus) && in_array($rawStockStatus, ['', 'in_stock', 'out_of_stock'], true)) ? $rawStockStatus : '';
+if ($priceSort !== $rawPriceSort || $stockStatus !== $rawStockStatus) {
+    $filterNotice = 'Some filter options were invalid and have been reset.';
+}
 
 $sql = "SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.status = 'active'";
 $params = [];
 
 if (!empty($search)) {
+    // Treat % and _ typed by the customer as normal characters
+    $like = '%' . addcslashes($search, '%_\\') . '%';
     $sql .= " AND (p.name LIKE ? OR p.description LIKE ?)";
-    $params[] = "%$search%";
-    $params[] = "%$search%";
+    $params[] = $like;
+    $params[] = $like;
 }
 
 if ($selectedCategory > 0) {
@@ -149,6 +176,8 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
+    <?= alertBox('info', $filterNotice) ?>
+
     <!-- TOP HEADER & FILTER BAR -->
     <div class="smiski-card" style="border-radius: 24px; padding: 1.75rem 2.2rem; margin-bottom: 1.75rem;">
         
@@ -164,7 +193,7 @@ require_once __DIR__ . '/includes/header.php';
             
             <!-- Search Input -->
             <div style="flex: 1; min-width: 200px; position: relative;">
-                <input type="text" name="search" value="<?= htmlspecialchars($search) ?>" placeholder="Search product name..." class="search-input hover-scale"
+                <input type="text" name="search" maxlength="100" aria-label="Search products" value="<?= htmlspecialchars($search) ?>" placeholder="Search product name..." class="search-input hover-scale"
                        style="width: 100%; padding: 0.65rem 0.9rem 0.65rem 2.3rem; border: 2px solid rgba(22, 101, 52, 0.5); border-radius: 14px; font-size: 0.85rem; background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(15px); color: #064e3b !important; outline: none; box-shadow: inset 0 2px 4px rgba(255,255,255,0.8); font-weight: 600;">
                 <i class="fa-solid fa-magnifying-glass" style="position: absolute; left: 0.85rem; top: 50%; transform: translateY(-50%); color: #15803d; font-size: 0.85rem;"></i>
             </div>
@@ -262,7 +291,7 @@ require_once __DIR__ . '/includes/header.php';
                         </h4>
 
                         <p style="font-size: 0.85rem; color: #1f2937; margin-bottom: 1.1rem; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; flex: 1; font-weight: 500;">
-                            <?= htmlspecialchars($product['description']) ?>
+                            <?= htmlspecialchars($product['description'] ?? '') ?>
                         </p>
 
                         <div style="margin-top: auto;">

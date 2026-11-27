@@ -7,44 +7,67 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-$message = '';
-$error = '';
+// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
+$message = getFlash('success');
+$error = getFlash('error');
+$replyErrors = [];
+$replyOld = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
+    $v = new Validator($_POST);
+    $action = $v->choice('action', ['reply', 'delete'], ['message' => MSG_INVALID_OPERATION]);
+    $id = $v->id('id');
+    if ($action === null || $id === null) {
+        abortRequest(400, MSG_INVALID_OPERATION, 'messages.php');
+    }
+    $find = $db->prepare("SELECT * FROM contact_messages WHERE id = ?");
+    $find->execute([$id]);
+    $ticket = $find->fetch(PDO::FETCH_ASSOC);
+    if (!$ticket) {
+        abortRequest(404, 'This message no longer exists. It may have been deleted.', 'messages.php');
+    }
+    $userId = $_SESSION['user_id'] ?? null;
 
     if ($action === 'reply') {
-        $id = intval($_POST['id'] ?? 0);
-        $replyText = trim($_POST['admin_reply'] ?? '');
+        $replyText = $v->message('admin_reply', ['required' => true, 'min' => 2, 'max' => 2000,
+            'minMessage' => 'Please write a reply of at least 2 characters.']);
+        $replyErrors = $v->errors();
 
-        if ($id > 0 && !empty($replyText)) {
-            $stmt = $db->prepare("UPDATE contact_messages SET admin_reply = ?, is_read = 1, replied_at = NOW() WHERE id = ?");
-            $stmt->execute([$replyText, $id]);
-            
-            $userId = $_SESSION['user_id'] ?? $_SESSION['admin_id'] ?? null;
-            if (function_exists('logActivity') && $userId) {
-                logActivity($userId, 'MESSAGE_REPLIED', "Replied to customer message ID $id");
-            }
-
-            $message = 'Reply saved successfully!';
+        if ($replyErrors) {
+            $replyOld = $ticket;
+            $replyOld['admin_reply'] = $replyText;
+            $error = 'Reply not sent. ' . MSG_FORM_ERRORS;
+            http_response_code(422);
         } else {
-            $error = 'Please enter a reply message.';
+            try {
+                $stmt = $db->prepare("UPDATE contact_messages SET admin_reply = ?, is_read = 1, replied_at = NOW() WHERE id = ?");
+                $stmt->execute([$replyText, $id]);
+                if (function_exists('logActivity') && $userId) {
+                    logActivity($userId, 'MESSAGE_REPLIED', "Replied to customer message ID $id");
+                }
+                setFlash('success', 'Reply saved successfully! The customer can now see it under My Messages.');
+                redirectTo('messages.php');
+            } catch (Exception $e) {
+                $replyOld = $ticket;
+                $replyOld['admin_reply'] = $replyText;
+                $error = 'Reply not sent. ' . safeErrorMessage($e, 'Message reply failed');
+                http_response_code(500);
+            }
         }
     }
 
     if ($action === 'delete') {
-        $id = intval($_POST['id'] ?? 0);
-        if ($id > 0) {
+        try {
             $stmt = $db->prepare("DELETE FROM contact_messages WHERE id = ?");
             $stmt->execute([$id]);
-
-            $userId = $_SESSION['user_id'] ?? $_SESSION['admin_id'] ?? null;
             if (function_exists('logActivity') && $userId) {
                 logActivity($userId, 'MESSAGE_DELETED', "Deleted message ID $id");
             }
-
-            $message = 'Message deleted successfully!';
+            setFlash('success', 'Message deleted successfully!');
+        } catch (Exception $e) {
+            setFlash('error', 'Message not deleted. ' . safeErrorMessage($e, 'Message delete failed'));
         }
+        redirectTo('messages.php');
     }
 }
 
@@ -302,6 +325,7 @@ require_once __DIR__ . '/includes/header.php';
                                             <i class="fa-solid fa-reply"></i> Reply
                                         </button>
                                         <form method="POST" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this message?')">
+                                            <?= csrfField() ?>
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="id" value="<?= $m['id'] ?>">
                                             <button type="submit" class="btn-action-delete" title="Delete Message">
@@ -349,7 +373,8 @@ require_once __DIR__ . '/includes/header.php';
         <button type="button" onclick="closeReplyModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
         <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem;">Reply to Message</h3>
 
-        <form method="POST">
+        <form method="POST" id="replyForm">
+            <?= csrfField() ?>
             <input type="hidden" name="action" value="reply">
             <input type="hidden" name="id" id="reply_id">
 
@@ -362,7 +387,8 @@ require_once __DIR__ . '/includes/header.php';
 
             <div style="margin-bottom: 1.5rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Admin Reply Message</label>
-                <textarea name="admin_reply" id="reply_text" rows="5" required placeholder="Type your response here..." class="smiski-textarea"></textarea>
+                <textarea name="admin_reply" id="reply_text" rows="5" required minlength="2" maxlength="2000" data-counter<?= invalidAttr($replyErrors, 'admin_reply') ?> placeholder="Type your response here..." class="smiski-textarea<?= invalidClass($replyErrors, 'admin_reply') ?>"></textarea>
+                <?= fieldError($replyErrors, 'admin_reply') ?>
             </div>
 
             <button type="submit" class="btn-green-glow" style="width: 100%; padding: 0.75rem; font-size: 0.95rem; font-weight: 700; border-radius: 12px;">
@@ -392,7 +418,8 @@ function openViewModal(m) {
 }
 function closeViewModal() { document.getElementById('viewModal').style.display = 'none'; }
 
-function openReplyModal(m) {
+function openReplyModal(m, keepErrors) {
+    if (!keepErrors && window.FormValidation) FormValidation.clearErrors(document.getElementById('replyForm'));
     document.getElementById('reply_id').value = m.id;
     document.getElementById('reply_to').innerText = m.name + ' (' + m.email + ')';
     document.getElementById('reply_subj').innerText = m.subject;
@@ -400,6 +427,12 @@ function openReplyModal(m) {
     document.getElementById('replyModal').style.display = 'flex';
 }
 function closeReplyModal() { document.getElementById('replyModal').style.display = 'none'; }
+<?php if ($replyOld !== null): ?>
+// The last reply failed validation: show the form again with the typed reply and the error
+document.addEventListener('DOMContentLoaded', function () {
+    openReplyModal(<?= json_encode($replyOld, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, true);
+});
+<?php endif; ?>
 </script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

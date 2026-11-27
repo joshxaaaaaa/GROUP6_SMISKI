@@ -22,6 +22,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
     <title>E-Commerce Store</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="../assets/css/form-feedback.css">
     <style>
         :root {
             --primary: #22c55e;          /* Vibrant Green */
@@ -341,6 +342,18 @@ $current_page = basename($_SERVER['PHP_SELF']);
 </header>
 
 
+<?php
+// Site-wide success / error notices (set with setFlash() before a redirect)
+$globalFlashSuccess = getFlash('success');
+$globalFlashError = getFlash('error');
+if ($globalFlashSuccess !== '' || $globalFlashError !== ''):
+?>
+<div style="max-width: 1200px; margin: 1.25rem auto 0; padding: 0 1rem; width: 100%;">
+    <?= alertBox('success', $globalFlashSuccess) ?>
+    <?= alertBox('error', $globalFlashError) ?>
+</div>
+<?php endif; ?>
+
 <?php if (isset($_SESSION['user_id'])): ?>
 <!-- Logout Confirmation Dialog -->
 <div class="modal-overlay" id="logoutConfirmModal" role="dialog" aria-modal="true" aria-labelledby="logoutConfirmTitle" onclick="if (event.target === this) closeLogoutConfirm()">
@@ -350,6 +363,7 @@ $current_page = basename($_SERVER['PHP_SELF']);
         </div>
         <h3 id="logoutConfirmTitle" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.5rem; color: #ffffff;">Are you sure you want to log out?</h3>
         <form method="POST" action="logout.php" style="display: flex; gap: 0.75rem; justify-content: center;">
+            <?= csrfField() ?>
             <input type="hidden" name="confirm_logout" value="1">
             <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="closeLogoutConfirm()">Cancel</button>
             <button type="submit" class="btn btn-primary" style="flex: 1;">Confirm</button>
@@ -368,10 +382,22 @@ $current_page = basename($_SERVER['PHP_SELF']);
     </div>
 </div>
 
+<script src="../assets/js/form-validation.js"></script>
 <script>
+// CSRF token for AJAX / state-changing requests
+window.CSRF_TOKEN = <?= json_encode(csrfToken()) ?>;
+
 function addToCart(productId, productName) {
-    fetch('cart.php?action=add&id=' + productId + '&ajax=1')
-        .then(res => res.json())
+    const id = parseInt(productId, 10);
+    if (!id || id < 1) {
+        showToast(productName, 'This operation cannot be completed. Please check your input.');
+        return;
+    }
+    fetch('cart.php?action=add&id=' + id + '&ajax=1&csrf_token=' + encodeURIComponent(window.CSRF_TOKEN), {
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+        credentials: 'same-origin'
+    })
+        .then(res => res.json().catch(() => ({ success: false, message: 'Something went wrong. Please try again later.' })))
         .then(data => {
             const badges = document.querySelectorAll('.cart-badge');
             if (typeof data.cartCount !== 'undefined') {
@@ -385,7 +411,7 @@ function addToCart(productId, productName) {
         })
         .catch(err => {
             console.error('Add to cart error:', err);
-            showToast(productName, 'Something went wrong. Please try again.');
+            showToast(productName, 'Something went wrong. Please check your connection and try again.');
         });
 }
 

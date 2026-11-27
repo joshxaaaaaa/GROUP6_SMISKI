@@ -1,11 +1,8 @@
 <?php
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0); // errors are logged, never shown (see config/validation.php)
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+// Session is started securely in config/db.php
 require_once __DIR__ . '/../config/db.php';
 
 if (!isAdminLoggedIn()) {
@@ -14,36 +11,88 @@ if (!isAdminLoggedIn()) {
 }
 
 $db = getDB();
-$message = '';
-$error = '';
+// Results of the last action (Post/Redirect/Get, so refreshing never repeats it)
+$message = getFlash('success');
+$error = getFlash('error');
+$editErrors = [];     // field => message for the Edit Customer form
+$editOld = null;      // entered values when the edit failed validation
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
+    $v = new Validator($_POST);
+    $action = $v->choice('action', ['edit', 'delete'], ['message' => MSG_INVALID_OPERATION]);
+    $id = $v->id('id');
+    if ($action === null || $id === null) {
+        abortRequest(400, MSG_INVALID_OPERATION, 'customers.php');
+    }
+
+    $find = $db->prepare("SELECT id, full_name, email FROM users WHERE id = ? AND role = 'customer'");
+    $find->execute([$id]);
+    $customer = $find->fetch();
+    if (!$customer) {
+        abortRequest(404, 'This customer record no longer exists.', 'customers.php');
+    }
 
     if ($action === 'edit') {
-        $id = intval($_POST['id'] ?? 0);
-        $name = sanitize($_POST['full_name'] ?? '');
-        $email = sanitize($_POST['email'] ?? '');
-        $phone = sanitize($_POST['phone'] ?? '');
-        $address = sanitize($_POST['address'] ?? '');
-        $status = sanitize($_POST['status'] ?? 'active');
+        $name = $v->personName('full_name');
+        $email = $v->email('email');
+        $phone = $v->phone('phone');
+        $address = $v->text('address', ['required' => true, 'min' => 5, 'max' => 500, 'multiline' => true,
+            'minMessage' => 'Please enter a complete address (at least 5 characters).']);
+        $status = $v->choice('status', ['active', 'inactive']);
 
-        if ($id > 0 && !empty($name) && !empty($email)) {
-            $stmt = $db->prepare("UPDATE users SET full_name = ?, email = ?, phone = ?, address = ?, status = ? WHERE id = ? AND role = 'customer'");
-            $stmt->execute([$name, $email, $phone, $address, $status, $id]);
-            logActivity($_SESSION['user_id'], 'CUSTOMER_UPDATED', "Updated customer record ID $id");
-            $message = 'Customer record updated successfully!';
+        if (!$v->hasError('email')) {
+            $dup = $db->prepare("SELECT id FROM users WHERE email = ? AND id <> ?");
+            $dup->execute([$email, $id]);
+            if ($dup->fetch()) {
+                $v->addError('email', MSG_EMAIL_TAKEN);
+            }
+        }
+
+        $editErrors = $v->errors();
+        if ($editErrors) {
+            $editOld = ['id' => $id, 'full_name' => $name, 'email' => $email, 'phone' => $phone, 'address' => $address, 'status' => $status ?? 'active'];
+            $error = 'Customer not updated. ' . MSG_FORM_ERRORS;
+            http_response_code(422);
+        } else {
+            try {
+                $stmt = $db->prepare("UPDATE users SET full_name = ?, email = ?, phone = ?, address = ?, status = ? WHERE id = ? AND role = 'customer'");
+                $stmt->execute([$name, $email, $phone, $address, $status, $id]);
+                logActivity($_SESSION['user_id'], 'CUSTOMER_UPDATED', "Updated customer record ID $id");
+                setFlash('success', 'Customer record updated successfully!');
+                redirectTo('customers.php');
+            } catch (PDOException $e) {
+                if ($e->getCode() === '23000') {
+                    $editErrors = ['email' => MSG_EMAIL_TAKEN];
+                    $editOld = ['id' => $id, 'full_name' => $name, 'email' => $email, 'phone' => $phone, 'address' => $address, 'status' => $status];
+                    $error = 'Customer not updated. ' . MSG_EMAIL_TAKEN;
+                    http_response_code(409);
+                } else {
+                    $error = 'Customer not updated. ' . safeErrorMessage($e, 'Customer update failed');
+                    http_response_code(500);
+                }
+            }
         }
     }
 
     if ($action === 'delete') {
-        $id = intval($_POST['id'] ?? 0);
-        if ($id > 0) {
-            $stmt = $db->prepare("DELETE FROM users WHERE id = ? AND role = 'customer'");
-            $stmt->execute([$id]);
-            logActivity($_SESSION['user_id'], 'CUSTOMER_DELETED', "Deleted customer ID $id");
-            $message = 'Customer record deleted successfully!';
+        try {
+            // Customers with orders are deactivated instead, so order history and stock records stay consistent
+            $orderCount = $db->prepare("SELECT COUNT(*) FROM orders WHERE customer_id = ?");
+            $orderCount->execute([$id]);
+            if ((int)$orderCount->fetchColumn() > 0) {
+                $db->prepare("UPDATE users SET status = 'inactive' WHERE id = ? AND role = 'customer'")->execute([$id]);
+                logActivity($_SESSION['user_id'], 'CUSTOMER_UPDATED', "Deactivated customer ID $id (has order records)");
+                setFlash('success', 'This customer has existing orders, so the account was deactivated instead of deleted to keep order records intact.');
+            } else {
+                $stmt = $db->prepare("DELETE FROM users WHERE id = ? AND role = 'customer'");
+                $stmt->execute([$id]);
+                logActivity($_SESSION['user_id'], 'CUSTOMER_DELETED', "Deleted customer ID $id");
+                setFlash('success', 'Customer record deleted successfully!');
+            }
+        } catch (Exception $e) {
+            setFlash('error', 'Customer not deleted. ' . safeErrorMessage($e, 'Customer delete failed'));
         }
+        redirectTo('customers.php');
     }
 }
 
@@ -216,6 +265,12 @@ require_once __DIR__ . '/includes/header.php';
         </div>
     <?php endif; ?>
 
+    <?php if ($error): ?>
+        <div style="background: rgba(254, 226, 226, 0.95); border: 1px solid rgba(248, 113, 113, 0.6); color: #991b1b; padding: 0.85rem 1rem; border-radius: 12px; font-size: 0.9rem; margin-bottom: 1.5rem; font-weight: 600; box-shadow: 0 5px 15px rgba(0,0,0,0.15);">
+            <i class="fa-solid fa-circle-exclamation" style="color: #dc2626;"></i> <?= htmlspecialchars($error) ?>
+        </div>
+    <?php endif; ?>
+
     <!-- Main Table Container -->
     <div class="smiski-glass-card" style="overflow: hidden;">
         <div style="overflow-x: auto;">
@@ -249,15 +304,16 @@ require_once __DIR__ . '/includes/header.php';
                                 </td>
                                 <td style="padding: 0.9rem 1rem; text-align: center;">
                                     <div style="display: inline-flex; gap: 0.4rem;">
-                                        <button onclick='openViewModal(<?= json_encode($c) ?>)' class="btn-action-view" title="View Customer Details">
+                                        <button type="button" onclick='openViewModal(<?= jsonAttr($c) ?>)' class="btn-action-view" title="View Customer Details">
                                             <i class="fa-solid fa-eye"></i> View
                                         </button>
-                                        <button onclick='openEditModal(<?= json_encode($c) ?>)' class="btn-action-edit" title="Edit Customer">
+                                        <button type="button" onclick='openEditModal(<?= jsonAttr($c) ?>)' class="btn-action-edit" title="Edit Customer">
                                             <i class="fa-solid fa-pen-to-square"></i> Edit
                                         </button>
                                         <form method="POST" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this customer record?')">
+                                            <?= csrfField() ?>
                                             <input type="hidden" name="action" value="delete">
-                                            <input type="hidden" name="id" value="<?= $c['id'] ?>">
+                                            <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
                                             <button type="submit" class="btn-action-delete" title="Delete Customer">
                                                 <i class="fa-solid fa-trash"></i> Delete
                                             </button>
@@ -297,28 +353,32 @@ require_once __DIR__ . '/includes/header.php';
         <button onclick="closeEditModal()" style="position: absolute; top: 1.25rem; right: 1.25rem; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #15803d;" onmouseover="this.style.color='#064e3b'" onmouseout="this.style.color='#15803d'">&times;</button>
         <h3 class="neon-glow-text" style="font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem;">Edit Customer</h3>
 
-        <form method="POST">
+        <form method="POST" id="editCustomerForm">
+            <?= csrfField() ?>
             <input type="hidden" name="action" value="edit">
             <input type="hidden" name="id" id="edit_id">
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Full Name</label>
-                <input type="text" name="full_name" id="edit_name" required class="smiski-input">
+                <input type="text" name="full_name" id="edit_name" required minlength="2" maxlength="100" class="smiski-input<?= invalidClass($editErrors, 'full_name') ?>"<?= invalidAttr($editErrors, 'full_name') ?>>
+                <?= fieldError($editErrors, 'full_name') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Email</label>
-                <input type="email" name="email" id="edit_email" required class="smiski-input">
+                <input type="email" name="email" id="edit_email" required maxlength="100" class="smiski-input<?= invalidClass($editErrors, 'email') ?>"<?= invalidAttr($editErrors, 'email') ?>>
+                <?= fieldError($editErrors, 'email') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Phone</label>
-                <input type="text" name="phone" id="edit_phone" required class="smiski-input">
+                <input type="tel" name="phone" id="edit_phone" required data-phone-input inputmode="numeric" pattern="[0-9]{7,15}" maxlength="15" placeholder="09123456789" title="Numbers only (7 to 15 digits)" class="smiski-input<?= invalidClass($editErrors, 'phone') ?>"<?= invalidAttr($editErrors, 'phone') ?>>
+                <?= fieldError($editErrors, 'phone') ?>
             </div>
 
             <div style="margin-bottom: 1rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Account Status</label>
-                <select name="status" id="edit_status" class="smiski-select">
+                <select name="status" id="edit_status" required class="smiski-select<?= invalidClass($editErrors, 'status') ?>">
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                 </select>
@@ -326,7 +386,8 @@ require_once __DIR__ . '/includes/header.php';
 
             <div style="margin-bottom: 1.5rem;">
                 <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.4rem; color: #1f2937;">Address</label>
-                <textarea name="address" id="edit_address" rows="3" required class="smiski-textarea"></textarea>
+                <textarea name="address" id="edit_address" rows="3" required minlength="5" maxlength="500" data-counter class="smiski-textarea<?= invalidClass($editErrors, 'address') ?>"<?= invalidAttr($editErrors, 'address') ?>></textarea>
+                <?= fieldError($editErrors, 'address') ?>
             </div>
 
             <button type="submit" class="btn-green-glow" style="width: 100%; padding: 0.75rem; font-size: 0.95rem; font-weight: 700; border-radius: 12px;">Save Customer Changes</button>
@@ -347,16 +408,23 @@ function openViewModal(c) {
 }
 function closeViewModal() { document.getElementById('viewModal').style.display = 'none'; }
 
-function openEditModal(c) {
+function openEditModal(c, keepErrors) {
+    // Opening the form for a (different) customer clears old validation messages
+    if (!keepErrors && window.FormValidation) FormValidation.clearErrors(document.getElementById('editCustomerForm'));
     document.getElementById('edit_id').value = c.id;
     document.getElementById('edit_name').value = c.full_name;
     document.getElementById('edit_email').value = c.email;
     document.getElementById('edit_phone').value = c.phone || '';
+    if (window.clearPhoneError) clearPhoneError(document.getElementById('edit_phone'));
     document.getElementById('edit_status').value = c.status;
     document.getElementById('edit_address').value = c.address || '';
     document.getElementById('editModal').style.display = 'flex';
 }
 function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
+<?php if ($editOld !== null): ?>
+// The last edit failed validation: show the form again with the entered values and errors
+document.addEventListener('DOMContentLoaded', function () { openEditModal(<?= json_encode($editOld, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>, true); });
+<?php endif; ?>
 </script>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
