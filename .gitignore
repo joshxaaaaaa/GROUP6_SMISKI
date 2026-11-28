@@ -1,4 +1,3 @@
-config.php
-config/
+config/db.php
 .env
 .env.local
